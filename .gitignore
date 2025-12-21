@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+debug.html
+detailed_page.html
+
 # Editor/IDE
 # .idea/
 # .vscode/
