@@ -1,4 +1,4 @@
-package main
+package utils
 
 import (
 	"fmt"
@@ -10,9 +10,9 @@ import (
 	"sync"
 )
 
-// downloadImages downloads a list of image URLs to the specified folder
+// DownloadImages downloads a list of image URLs to the specified folder
 // and returns a map of URL -> Local Path
-func downloadImages(urls []string, folder string) (map[string]string, error) {
+func DownloadImages(urls []string, folder string) (map[string]string, error) {
 	urlToPath := make(map[string]string)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -54,13 +54,7 @@ func downloadImages(urls []string, folder string) (map[string]string, error) {
 			}
 
 			mu.Lock()
-			// Return absolute path so it's clear
-			absPath, err := filepath.Abs(path)
-			if err == nil {
-				urlToPath[url] = absPath
-			} else {
-				urlToPath[url] = path
-			}
+			urlToPath[url] = path
 			mu.Unlock()
 		}(i, url)
 	}
