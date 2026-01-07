@@ -222,10 +222,19 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Generate JWT Token
+	token, err := utils.GenerateToken(user.ID.Hex())
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to generate token: %v", err))
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
 	utils.AddToLogMessage(&logMessageBuilder, "Login successful")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "Login successful",
+		"token":   token,
 		"user":    user,
 	})
 }

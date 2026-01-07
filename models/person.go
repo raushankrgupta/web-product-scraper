@@ -9,6 +9,7 @@ import (
 // Person represents a user profile with body dimensions and images
 type Person struct {
 	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID     primitive.ObjectID `bson:"user_id" json:"user_id"` // Link to User
 	Name       string             `bson:"name" json:"name"`
 	Age        int                `bson:"age" json:"age"`
 	Gender     string             `bson:"gender" json:"gender"`

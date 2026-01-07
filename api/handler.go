@@ -18,10 +18,21 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Scrape API]")
 
+	// Support both Query Params and JSON Body
 	productURL := r.URL.Query().Get("url")
 	if productURL == "" {
+		// Try JSON body
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			productURL = req.URL
+		}
+	}
+
+	if productURL == "" {
 		utils.AddToLogMessage(&logMessageBuilder, "URL parameter missing")
-		http.Error(w, "Please provide a 'url' query parameter", http.StatusBadRequest)
+		http.Error(w, "Please provide a 'url' query parameter or JSON body", http.StatusBadRequest)
 		return
 	}
 
@@ -109,4 +120,36 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error encoding response", http.StatusInternalServerError)
 		return
 	}
+}
+
+// GenerateFittingHandler generates a fitting look
+func GenerateFittingHandler(w http.ResponseWriter, r *http.Request) {
+	userIdStr, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	_ = userIdStr // used for logging if needed
+
+	var req struct {
+		ProductID string `json:"product_id"`
+		PersonID  string `json:"person_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Logic to fetch person and product, and run ML
+	// For now, we return a mock response as "The core fitting logic" is not fully defined/implemented in this context yet.
+	// We assume try-on_handler.go has some logic we could reuse, but requirements asked for this endpoint structure.
+
+	response := map[string]interface{}{
+		"fitting_score": 85,
+		"feedback":      "The fit looks good, sleeves are perfect length.",
+		"visual_url":    "http://localhost:8081/generated_images/mock_fitting_result.jpg",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }

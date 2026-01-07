@@ -14,6 +14,8 @@ import (
 
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 const (
@@ -22,23 +24,31 @@ const (
 	UploadDir      = "user_images"
 )
 
-func CreateProfileHandler(w http.ResponseWriter, r *http.Request) {
-	var logMessageBuilder strings.Builder
-	defer func() {
-		fmt.Println(logMessageBuilder.String())
-	}()
-	utils.AddToLogMessage(&logMessageBuilder, "[Create Profile API]")
-
-	if r.Method != http.MethodPost {
-		utils.AddToLogMessage(&logMessageBuilder, "Method not allowed")
+// PersonHandler handles CRUD operations for persons
+func PersonHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		createPerson(w, r)
+	case http.MethodGet:
+		getPersons(w, r)
+	case http.MethodDelete:
+		deletePerson(w, r)
+	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func createPerson(w http.ResponseWriter, r *http.Request) {
+	userIdStr, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	userID, _ := primitive.ObjectIDFromHex(userIdStr)
 
 	// Parse multipart form (max 10MB)
-	err := r.ParseMultipartForm(10 << 20)
+	err = r.ParseMultipartForm(10 << 20)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Error parsing form data: %v", err))
 		http.Error(w, "Error parsing form data", http.StatusBadRequest)
 		return
 	}
@@ -53,9 +63,7 @@ func CreateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	waistStr := r.FormValue("waist")
 	hipsStr := r.FormValue("hips")
 
-	// Validate required fields (basic validation)
 	if name == "" {
-		utils.AddToLogMessage(&logMessageBuilder, "Name is required")
 		http.Error(w, "Name is required", http.StatusBadRequest)
 		return
 	}
@@ -73,7 +81,6 @@ func CreateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	var imagePaths []string
 
 	if len(files) > 0 {
-		// Create upload directory if it doesn't exist
 		if _, err := os.Stat(UploadDir); os.IsNotExist(err) {
 			os.Mkdir(UploadDir, 0755)
 		}
@@ -81,45 +88,26 @@ func CreateProfileHandler(w http.ResponseWriter, r *http.Request) {
 		for _, fileHeader := range files {
 			file, err := fileHeader.Open()
 			if err != nil {
-				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Error retrieving file: %v", err))
-				http.Error(w, "Error retrieving file", http.StatusInternalServerError)
-				return
+				continue
 			}
 			defer file.Close()
 
-			// Create a unique filename
 			filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
 			filePath := filepath.Join(UploadDir, filename)
 
-			// Create destination file
 			dst, err := os.Create(filePath)
 			if err != nil {
-				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Error saving file: %v", err))
-				http.Error(w, "Error saving file", http.StatusInternalServerError)
-				return
+				continue
 			}
 			defer dst.Close()
 
-			// Copy buffer
-			if _, err := io.Copy(dst, file); err != nil {
-				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Error saving file content: %v", err))
-				http.Error(w, "Error saving file content", http.StatusInternalServerError)
-				return
-			}
-
-			// Store absolute path or relative path? User asked for "file paths".
-			// Let's store the relative path for portability, or absolute if needed.
-			// The prompt said "Add all the image filepaths".
-			// I'll store the relative path from the project root.
+			io.Copy(dst, file)
 			imagePaths = append(imagePaths, filePath)
 		}
 	}
 
-	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Processed %d images", len(imagePaths)))
-
-	// Create Person object
-	now := time.Now()
 	person := models.Person{
+		UserID:     userID,
 		Name:       name,
 		Age:        age,
 		Gender:     gender,
@@ -129,29 +117,118 @@ func CreateProfileHandler(w http.ResponseWriter, r *http.Request) {
 		Waist:      waist,
 		Hips:       hips,
 		ImagePaths: imagePaths,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 
-	// Save to MongoDB
 	collection := utils.GetCollection(DatabaseName, CollectionName)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	result, err := collection.InsertOne(ctx, person)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Error saving to database: %v", err))
 		http.Error(w, fmt.Sprintf("Error saving to database: %v", err), http.StatusInternalServerError)
 		return
 	}
+	person.ID = result.InsertedID.(primitive.ObjectID)
 
-	utils.AddToLogMessage(&logMessageBuilder, "Profile created successfully")
-
-	// Return success response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "Profile created successfully",
-		"id":      result.InsertedID,
-		"person":  person,
-	})
+	json.NewEncoder(w).Encode(person)
+}
+
+func getPersons(w http.ResponseWriter, r *http.Request) {
+	userIdStr, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	userID, _ := primitive.ObjectIDFromHex(userIdStr)
+
+	// Check if requesting specific person
+	pathParts := strings.Split(r.URL.Path, "/")
+	// /persons -> ["", "persons"] -> len 2
+	// /persons/{id} -> ["", "persons", "id"] -> len 3
+	if len(pathParts) > 2 && pathParts[2] != "" {
+		getPersonByID(w, r, pathParts[2], userID)
+		return
+	}
+
+	collection := utils.GetCollection(DatabaseName, CollectionName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cursor, err := collection.Find(ctx, bson.M{"user_id": userID})
+	if err != nil {
+		http.Error(w, "Error fetching persons", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	var persons []models.Person
+	if err = cursor.All(ctx, &persons); err != nil {
+		http.Error(w, "Error decoding persons", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(persons)
+}
+
+func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID primitive.ObjectID) {
+	personID, err := primitive.ObjectIDFromHex(idStr)
+	if err != nil {
+		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		return
+	}
+
+	collection := utils.GetCollection(DatabaseName, CollectionName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var person models.Person
+	err = collection.FindOne(ctx, bson.M{"_id": personID, "user_id": userID}).Decode(&person)
+	if err != nil {
+		http.Error(w, "Person not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(person)
+}
+
+func deletePerson(w http.ResponseWriter, r *http.Request) {
+	userIdStr, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	userID, _ := primitive.ObjectIDFromHex(userIdStr)
+
+	pathParts := strings.Split(r.URL.Path, "/")
+	if len(pathParts) < 3 || pathParts[2] == "" {
+		http.Error(w, "Person ID required", http.StatusBadRequest)
+		return
+	}
+	personID, err := primitive.ObjectIDFromHex(pathParts[2])
+	if err != nil {
+		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		return
+	}
+
+	collection := utils.GetCollection(DatabaseName, CollectionName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := collection.DeleteOne(ctx, bson.M{"_id": personID, "user_id": userID})
+	if err != nil {
+		http.Error(w, "Error deleting person", http.StatusInternalServerError)
+		return
+	}
+
+	if result.DeletedCount == 0 {
+		http.Error(w, "Person not found or unauthorized", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
