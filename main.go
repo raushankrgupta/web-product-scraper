@@ -40,8 +40,10 @@ func main() {
 	// Generic Auth Routes
 	http.HandleFunc("/auth/signup", corsMiddleware(api.SignupHandler))
 	http.HandleFunc("/auth/verify-email", corsMiddleware(api.VerifyEmailHandler))
+	http.HandleFunc("/auth/verify-otp", corsMiddleware(api.VerifyOTPHandler))
 	http.HandleFunc("/auth/login", corsMiddleware(api.LoginHandler))
 	http.HandleFunc("/auth/forgot-password", corsMiddleware(api.ForgotPasswordHandler))
+	http.HandleFunc("/auth/reset-password", corsMiddleware(api.ResetPasswordHandler))
 	http.HandleFunc("/try-on", corsMiddleware(api.VirtualTryOnHandler))
 
 	// Serve static files for images

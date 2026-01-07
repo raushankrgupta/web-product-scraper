@@ -3,14 +3,12 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
@@ -37,6 +35,19 @@ type LoginRequest struct {
 // ForgotPasswordRequest represents the payload for forgot password
 type ForgotPasswordRequest struct {
 	Email string `json:"email"`
+}
+
+// VerifyOTPRequest represents the payload for verifying OTP
+type VerifyOTPRequest struct {
+	Email string `json:"email"`
+	OTP   string `json:"otp"`
+}
+
+// ResetPasswordRequest represents the payload for resetting password
+type ResetPasswordRequest struct {
+	Email       string `json:"email"`
+	OTP         string `json:"otp"`
+	NewPassword string `json:"new_password"`
 }
 
 // SignupHandler handles user registration
@@ -92,25 +103,24 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate Verification Token
-	tokenBytes := make([]byte, 16)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to generate token: %v", err))
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
-		return
+	// Temporary: Generate OTP manually here since we don't have utils.GenerateOTP yet
+	otpCode := ""
+	for i := 0; i < 6; i++ {
+		b := make([]byte, 1)
+		rand.Read(b)
+		otpCode += fmt.Sprintf("%d", int(b[0])%10)
 	}
-	verificationToken := hex.EncodeToString(tokenBytes)
 
 	newUser := models.User{
-		Name:              req.Name,
-		Email:             req.Email,
-		Password:          string(hashedPassword),
-		DOB:               req.DOB,
-		Gender:            req.Gender,
-		Status:            "pending",
-		VerificationToken: verificationToken,
-		CreatedAt:         time.Now(),
-		UpdatedAt:         time.Now(),
+		Name:      req.Name,
+		Email:     req.Email,
+		Password:  string(hashedPassword),
+		DOB:       req.DOB,
+		Gender:    req.Gender,
+		Status:    "pending",
+		OTP:       otpCode,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 
 	res, err := collection.InsertOne(ctx, newUser)
@@ -120,18 +130,24 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mock Sending Email
-	verificationLink := fmt.Sprintf("http://localhost:8081/auth/verify-email?token=%s", verificationToken)
-	mockEmailMsg := fmt.Sprintf("\n[EMAIL MOCK] To: %s\nSubject: Verify your email\nBody: Click here to verify: %s\n\n", req.Email, verificationLink)
-	fmt.Printf(mockEmailMsg)
-	utils.AddToLogMessage(&logMessageBuilder, "User registered successfully. Sent mock verification email.")
+	// Send OTP Email
+	emailErr := utils.SendEmail(req.Name, req.Email, "Verify your email",
+		fmt.Sprintf("Your OTP is: %s", otpCode),
+		fmt.Sprintf("<h1>Your OTP is: <strong>%s</strong></h1>", otpCode))
 
-	newUser.ID = res.InsertedID.(interface{}).(primitive.ObjectID) // Cast for JSON response if needed, but we don't return password
+	if emailErr != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to send email: %v", emailErr))
+		// Note: User created but email failed. Client might need to retry resend OTP.
+	} else {
+		utils.AddToLogMessage(&logMessageBuilder, "User registered successfully. Sent OTP email.")
+	}
+
+	newUser.ID = res.InsertedID.(interface{}).(primitive.ObjectID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "User registered successfully. Please accept the verification link sent to your email.",
+		"message": "User registered successfully. Please verify your email using the OTP sent.",
 		"user":    newUser,
 	})
 }
@@ -272,6 +288,92 @@ func VerifyEmailHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// VerifyOTPHandler handles OTP verification
+func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Verify OTP API]")
+
+	if r.Method != http.MethodPost {
+		utils.AddToLogMessage(&logMessageBuilder, "Method not allowed")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req VerifyOTPRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Invalid request body: %v", err))
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Email == "" || req.OTP == "" {
+		utils.AddToLogMessage(&logMessageBuilder, "Email and OTP are required")
+		http.Error(w, "Email and OTP are required", http.StatusBadRequest)
+		return
+	}
+
+	collection := utils.GetCollection("fitly", "users")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var user models.User
+	err := collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&user)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("User not found: %s", req.Email))
+			http.Error(w, "User not found", http.StatusNotFound)
+		} else {
+			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Database error: %v", err))
+			http.Error(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if user.Status == "verified" || user.Status == "active" {
+		if user.OTP != req.OTP {
+			utils.AddToLogMessage(&logMessageBuilder, "Invalid OTP")
+			http.Error(w, "Invalid OTP", http.StatusUnauthorized)
+			return
+		}
+		// If verified/active and OTP matches, we assume it's for Password Reset flow.
+		// We return success but DO NOT clear OTP yet, as it's needed for ResetPassword API.
+		// A more secure way would be to return a temporary reset token, but per requirements we use OTP.
+		utils.AddToLogMessage(&logMessageBuilder, "OTP verified for password reset")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "OTP verified successfully. Please proceed to reset password.",
+		})
+		return
+	}
+
+	if user.OTP != req.OTP {
+		utils.AddToLogMessage(&logMessageBuilder, "Invalid OTP")
+		http.Error(w, "Invalid OTP", http.StatusUnauthorized)
+		return
+	}
+
+	// OTP Correct, verify user
+	update := bson.M{
+		"$set":   bson.M{"status": "verified"},
+		"$unset": bson.M{"otp": ""},
+	}
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to update user status: %v", err))
+		http.Error(w, "Failed to update user status", http.StatusInternalServerError)
+		return
+	}
+
+	utils.AddToLogMessage(&logMessageBuilder, "OTP verified successfully")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Email verification successful! You can now login.",
+	})
+}
+
 // ForgotPasswordHandler handles forgot password requests
 func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -303,33 +405,120 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Check if user exists (optional, depends on security policy to reveal existence)
-	// For friendly UX, we usually check.
 	var user models.User
 	err := collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&user)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			// Don't reveal user doesn't exist, just say email sent if we want to be secure.
-			// But for this task I will validation
-			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("User not found: %s", req.Email))
-			http.Error(w, "User with this email not found", http.StatusNotFound)
-			return
-		}
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Database error: %v", err))
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("User not found: %s", req.Email))
+		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
-	// Mock sending email
-	// In a real app: utils.SendEmail(req.Email, "Reset Password", "Link...")
+	// Generate OTP
+	// Temporary: Generate OTP manually here since we don't have utils.GenerateOTP yet
+	otpCode := ""
+	for i := 0; i < 6; i++ {
+		b := make([]byte, 1)
+		rand.Read(b)
+		otpCode += fmt.Sprintf("%d", int(b[0])%10)
+	}
 
-	// Just log it for now
-	config.LoadConfig() // Ensure config is loaded if we need email settings
-	// fmt.Printf("Mock: Sending recovery email to %s\n", req.Email)
-	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Mock sending recovery email to %s", req.Email))
+	// Update User with OTP
+	update := bson.M{
+		"$set": bson.M{"otp": otpCode},
+	}
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to update user OTP: %v", err))
+		http.Error(w, "Failed to update user", http.StatusInternalServerError)
+		return
+	}
 
+	// Send OTP Email
+	emailErr := utils.SendEmail(user.Name, req.Email, "Reset Password OTP",
+		fmt.Sprintf("Your OTP for password reset is: %s", otpCode),
+		fmt.Sprintf("<h1>Your OTP for password reset is: <strong>%s</strong></h1>", otpCode))
+
+	if emailErr != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to send email: %v", emailErr))
+		http.Error(w, "Failed to send email", http.StatusInternalServerError)
+		return
+	}
+
+	utils.AddToLogMessage(&logMessageBuilder, "OTP for password reset sent")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"message": "If the email is registered, a password recovery link has been sent.",
+		"message": "OTP sent to your email.",
+	})
+}
+
+// ResetPasswordHandler handles password reset with OTP
+func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Reset Password API]")
+
+	if r.Method != http.MethodPost {
+		utils.AddToLogMessage(&logMessageBuilder, "Method not allowed")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ResetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Invalid request body: %v", err))
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Email == "" || req.OTP == "" || req.NewPassword == "" {
+		utils.AddToLogMessage(&logMessageBuilder, "Email, OTP and New Password are required")
+		http.Error(w, "Email, OTP and New Password are required", http.StatusBadRequest)
+		return
+	}
+
+	collection := utils.GetCollection("fitly", "users")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var user models.User
+	err := collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&user)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("User not found: %s", req.Email))
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	if user.OTP != req.OTP {
+		utils.AddToLogMessage(&logMessageBuilder, "Invalid OTP")
+		http.Error(w, "Invalid OTP", http.StatusUnauthorized)
+		return
+	}
+
+	// Hash new password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to hash password: %v", err))
+		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	// Update password and clear OTP
+	update := bson.M{
+		"$set":   bson.M{"password": string(hashedPassword)},
+		"$unset": bson.M{"otp": ""},
+	}
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to update password: %v", err))
+		http.Error(w, "Failed to update password", http.StatusInternalServerError)
+		return
+	}
+
+	utils.AddToLogMessage(&logMessageBuilder, "Password reset successfully")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Password reset successfully. Please login with your new password.",
 	})
 }

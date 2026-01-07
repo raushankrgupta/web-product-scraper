@@ -7,7 +7,7 @@
 
 ### 1. Signup
 **Endpoint:** `POST /auth/signup`
-**Description:** Registers a new user.
+**Description:** Registers a new user and sends an OTP to their email.
 
 **Request Body:**
 ```json
@@ -23,45 +23,43 @@
 **Response (201 Created):**
 ```json
 {
-  "message": "User registered successfully. Please accept the verification link sent to your email.",
+  "message": "User registered successfully. Please verify your email using the OTP sent.",
   "user": {
-    "id": "60d5ec49f1b2c820...",
     "name": "John Doe",
     "email": "john.doe@example.com",
-    "dob": "1990-01-01",
-    "gender": "Male",
     "status": "pending",
-    "created_at": "2023-10-27T10:00:00Z",
-    "updated_at": "2023-10-27T10:00:00Z"
+    ...
   }
 }
 ```
 
-**Response (400 Bad Request):**
-- Missing fields.
-- Invalid format.
-
-**Response (409 Conflict):**
-- User with email already exists.
-
 ---
 
-### 2. Verify Email
-**Endpoint:** `GET /auth/verify-email`
-**Description:** Verifies user's email using the token sent via email.
+### 2. Verify OTP (Email Verification & Password Reset)
+**Endpoint:** `POST /auth/verify-otp`
+**Description:** Verifies the OTP sent to the user's email. Used for both initial account verification and password reset flow.
 
-**Query Parameters:**
-- `token` (required): The verification token.
-
-**Response (200 OK):**
+**Request Body:**
 ```json
 {
-  "message": "Email verification completed! Kindly proceed with login"
+  "email": "john.doe@example.com",
+  "otp": "123456"
 }
 ```
 
-**Response (400 Bad Request):**
-- Token invalid or expired.
+**Response (200 OK):**
+- **If used for Account Verification:**
+```json
+{
+  "message": "Email verification successful! You can now login."
+}
+```
+- **If used for Password Reset (User already verified):**
+```json
+{
+  "message": "OTP verified successfully. Please proceed to reset password."
+}
+```
 
 ---
 
@@ -81,29 +79,18 @@
 ```json
 {
   "message": "Login successful",
-  "user": {
-    "id": "60d5ec49f1b2c820...",
-    "name": "John Doe",
-    "email": "john.doe@example.com",
-    "dob": "1990-01-01",
-    "gender": "Male",
-    "created_at": "2023-10-27T10:00:00Z",
-    "updated_at": "2023-10-27T10:00:00Z"
-  }
+  "user": { ... }
 }
 ```
 
-**Response (401 Unauthorized):**
-- Invalid email or password.
-
 **Response (403 Forbidden):**
-- Please verify your email first.
+- "Please verify your email first" (If account is still pending)
 
 ---
 
 ### 4. Forgot Password
 **Endpoint:** `POST /auth/forgot-password`
-**Description:** Initiates password recovery.
+**Description:** Initiates password recovery by sending an OTP to the registered email.
 
 **Request Body:**
 ```json
@@ -115,9 +102,28 @@
 **Response (200 OK):**
 ```json
 {
-  "message": "If the email is registered, a password recovery link has been sent."
+  "message": "OTP sent to your email."
 }
 ```
 
-**Response (400 Bad Request):**
-- Email is missing.
+---
+
+### 5. Reset Password
+**Endpoint:** `POST /auth/reset-password`
+**Description:** Resets the user's password using the verified OTP.
+
+**Request Body:**
+```json
+{
+  "email": "john.doe@example.com",
+  "otp": "123456",
+  "new_password": "newSecurePassword123"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "Password reset successfully. Please login with your new password."
+}
+```

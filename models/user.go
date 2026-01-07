@@ -16,6 +16,7 @@ type User struct {
 	Gender            string             `bson:"gender,omitempty" json:"gender,omitempty"`
 	Status            string             `bson:"status" json:"status"`        // pending, verified, active
 	VerificationToken string             `bson:"verification_token" json:"-"` // Token for email verification
+	OTP               string             `bson:"otp" json:"-"`                // OTP for email verification
 	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt         time.Time          `bson:"updated_at" json:"updated_at"`
 }
