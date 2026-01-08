@@ -54,7 +54,6 @@ func main() {
 
 	port := config.Port
 	fmt.Printf("Server starting on port %s...\n", port)
-	fmt.Printf("Usage: curl \"http://localhost:%s/scrape?url=<product_url>\"\n", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
