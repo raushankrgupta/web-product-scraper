@@ -25,7 +25,7 @@ func GenerateTryOnImage(ctx context.Context, personImageURL string, productImage
 	}
 	defer client.Close()
 
-	model := client.GenerativeModel("gemini-1.5-pro") // Using gemini-1.5-pro as requested (or closest available equivalent for image generation/vision)
+	model := client.GenerativeModel("gemini-3-pro-image-preview")
 	// Note: "gemini-nano-banana" or "gemini-3-pro-image-preview" mentioned in prompt might be placeholders or specific preview models.
 	// We'll use a standard capable model. If specifically "gemini-1.5-pro" or similar is needed for vision + text -> image (if supported directly or via description).
 	// Wait, the user asked for "gemini-3-pro-image-preview". I should probably check if that's a valid model or use a standard one.
@@ -87,22 +87,20 @@ Dimensions: %s
 	// If the response contains an image part, we extract it.
 
 	for _, part := range resp.Candidates[0].Content.Parts {
-		if txt, ok := part.(genai.Text); ok {
-			// If it returns text (e.g. "I cannot generate images"), we should probably return that as error or log it.
-			// But if it returns a URL?
-			return []byte(txt), nil // Returning text for now if no image found, or maybe it returns a URL in text?
+		switch p := part.(type) {
+		case genai.Text:
+			return []byte(p), nil
+		case genai.Blob:
+			return p.Data, nil
+		default:
+			// Log the type for debugging (printing to stdout/err since we don't have logger passed here easily, or use fmt)
+			fmt.Printf("Received unexpected part type: %T\n", p)
+			// Return string representation as fallback?
+			return []byte(fmt.Sprintf("%v", p)), nil
 		}
-		// The Go SDK might not have a direct "Image" type in the response parts for all versions.
-		// We need to check documentation or assume standard behavior.
-		// Actually, standard Gemini 1.5 Pro is text/multimodal IN, text OUT.
-		// Imagen is for images.
-		// The user asked for "gemini-3-pro-image-preview".
-		// I will assume for now we return the text response which might contain a URL or description,
-		// OR if the SDK supports it, we look for image data.
-		// Let's return the raw response as bytes for the handler to process or just the text.
 	}
 
-	return nil, fmt.Errorf("unexpected response format")
+	return nil, fmt.Errorf("unexpected response format (empty content)")
 }
 
 func fetchImage(pathOrURL string) ([]byte, error) {

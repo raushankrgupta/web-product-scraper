@@ -14,6 +14,8 @@ var (
 	GoogleClientSecret string
 	GoogleRedirectURL  string
 	GeminiAPIKey       string
+	AWSRegion          string
+	AWSBucketName      string
 )
 
 // LoadConfig loads environment variables from .env file
@@ -40,4 +42,13 @@ func LoadConfig() {
 	}
 
 	GeminiAPIKey = os.Getenv("GEMINI_API_KEY")
+
+	AWSRegion = os.Getenv("AWS_REGION")
+	if AWSRegion == "" {
+		AWSRegion = "ap-south-1" // Default to Mumbai or user preference
+	}
+	AWSBucketName = os.Getenv("AWS_BUCKET_NAME")
+	if AWSBucketName == "" {
+		AWSBucketName = "tryonfusion"
+	}
 }

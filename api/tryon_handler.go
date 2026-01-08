@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -34,6 +36,11 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Debug: Print raw body
+	bodyBytes, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore body for decoder
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Received Body: %s", string(bodyBytes)))
 
 	var req TryOnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -99,25 +106,77 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		person.Gender, person.Height, person.Weight, person.Chest, person.Waist, person.Hips)
 
 	// Use the first image of the person and product for now
-	// In a real scenario, we might want to let the user choose or send multiple
-	personImageURL := person.ImagePaths[0] // Assuming these are accessible URLs or local paths we can serve/read
-	// If they are local paths, we need to make sure utils.GenerateTryOnImage can handle them or we serve them.
-	// For this implementation, we'll assume they are accessible URLs or we might need to adjust fetchImage in utils.
-	// Given I don't know the exact format, I'll proceed.
-
-	generatedContent, err := utils.GenerateTryOnImage(r.Context(), personImageURL, product.Images, product.Dimensions, personDetails)
+	// Person Image Path is now an S3 Key, so we need to generate a Presigned URL (or read it and pass bytes, but existing helper fetches from URL)
+	personImageKey := person.ImagePaths[0]
+	personImageURL, err := utils.GetPresignedURL(r.Context(), personImageKey)
 	if err != nil {
-		http.Error(w, "Failed to generate try-on image: "+err.Error(), http.StatusInternalServerError)
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to get presigned URL for person image: %v", err))
+		http.Error(w, "Failed to get person image", http.StatusInternalServerError)
 		return
 	}
 
-	// 4. Return Response
-	w.Header().Set("Content-Type", "application/json") // Or image/jpeg if it's raw bytes
-	// If generatedContent is text (URL), return JSON.
-	// If it's image bytes, return image.
-	// For now, let's wrap it in JSON.
-	response := map[string]string{
-		"result": string(generatedContent),
+	// Use a background context with timeout for the heavy Gemini call
+	// This prevents the operation from being aborted if the client disconnects/times out
+	geminiCtx, cancelGemini := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelGemini()
+
+	generatedContent, err := utils.GenerateTryOnImage(geminiCtx, personImageURL, product.Images, product.Dimensions, personDetails)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to generate try-on image: %v", err))
+		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "quota") {
+			http.Error(w, "Quota exceeded. Please try again later.", http.StatusTooManyRequests)
+		} else {
+			http.Error(w, "Failed to generate try-on image: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// 4. Save Try-On Record
+	// Upload generated image to S3
+	fileName := fmt.Sprintf("generated_tryon_%d.jpg", time.Now().UnixNano())
+	objectKey := fmt.Sprintf("generated_images/%s", fileName)
+
+	// generatedContent is []byte
+	_, err = utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err))
+		http.Error(w, "Failed to upload generated image", http.StatusInternalServerError)
+		return
+	}
+
+	// Capture UserID
+	userID, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "Warning: UserID not found in context")
+	}
+
+	tryOnRecord := models.TryOn{
+		ID:                primitive.NewObjectID(),
+		UserID:            userID,
+		PersonID:          req.PersonID,
+		ProductURL:        req.ProductURL,
+		PersonImageURL:    personImageKey, // Store Key
+		GeneratedImageURL: objectKey,      // Store Key
+		Status:            "completed",
+		CreatedAt:         time.Now(),
+	}
+
+	collection = utils.GetCollection("fitly", "tryons")
+	_, err = collection.InsertOne(context.Background(), tryOnRecord)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save try-on record: %v", err))
+		// We proceed to return the response even if DB save fails
+	}
+
+	// Generate Presigned URL for response
+	presignedGeneratedURL, _ := utils.GetPresignedURL(r.Context(), objectKey)
+	tryOnRecord.GeneratedImageURL = presignedGeneratedURL
+
+	// 5. Return Response
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]interface{}{
+		"result":        tryOnRecord.GeneratedImageURL,
+		"tryon_details": tryOnRecord,
 	}
 	json.NewEncoder(w).Encode(response)
 }

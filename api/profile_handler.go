@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -81,10 +78,6 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 	var imagePaths []string
 
 	if len(files) > 0 {
-		if _, err := os.Stat(UploadDir); os.IsNotExist(err) {
-			os.Mkdir(UploadDir, 0755)
-		}
-
 		for _, fileHeader := range files {
 			file, err := fileHeader.Open()
 			if err != nil {
@@ -93,16 +86,16 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 			defer file.Close()
 
 			filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
-			filePath := filepath.Join(UploadDir, filename)
+			objectKey := fmt.Sprintf("person_images/%s", filename)
 
-			dst, err := os.Create(filePath)
+			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"))
 			if err != nil {
+				// Log error but continue with other files?
+				fmt.Printf("Failed to upload %s: %v\n", filename, err)
 				continue
 			}
-			defer dst.Close()
 
-			io.Copy(dst, file)
-			imagePaths = append(imagePaths, filePath)
+			imagePaths = append(imagePaths, objectKey)
 		}
 	}
 
@@ -170,6 +163,19 @@ func getPersons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate Presigned URLs
+	for i := range persons {
+		var presignedURLs []string
+		for _, key := range persons[i].ImagePaths {
+			if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
+				presignedURLs = append(presignedURLs, url)
+			} else {
+				presignedURLs = append(presignedURLs, key) // Fallback or handle error
+			}
+		}
+		persons[i].ImagePaths = presignedURLs
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(persons)
 }
@@ -191,6 +197,17 @@ func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID 
 		http.Error(w, "Person not found", http.StatusNotFound)
 		return
 	}
+
+	// Generate Presigned URLs
+	var presignedURLs []string
+	for _, key := range person.ImagePaths {
+		if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
+			presignedURLs = append(presignedURLs, url)
+		} else {
+			presignedURLs = append(presignedURLs, key) // Fallback
+		}
+	}
+	person.ImagePaths = presignedURLs
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(person)

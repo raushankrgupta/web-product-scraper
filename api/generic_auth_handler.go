@@ -103,7 +103,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Temporary: Generate OTP manually here since we don't have utils.GenerateOTP yet
+	// Generate OTP
 	otpCode := ""
 	for i := 0; i < 6; i++ {
 		b := make([]byte, 1)
@@ -239,64 +239,6 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// VerifyEmailHandler handles email verification logic
-func VerifyEmailHandler(w http.ResponseWriter, r *http.Request) {
-	var logMessageBuilder strings.Builder
-	defer func() {
-		fmt.Println(logMessageBuilder.String())
-	}()
-	utils.AddToLogMessage(&logMessageBuilder, "[Verify Email API]")
-
-	if r.Method != http.MethodGet {
-		utils.AddToLogMessage(&logMessageBuilder, "Method not allowed")
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		utils.AddToLogMessage(&logMessageBuilder, "Token is required")
-		http.Error(w, "Token is required", http.StatusBadRequest)
-		return
-	}
-
-	collection := utils.GetCollection("fitly", "users")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var user models.User
-	err := collection.FindOne(ctx, bson.M{"verification_token": token}).Decode(&user)
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			utils.AddToLogMessage(&logMessageBuilder, "Invalid or expired verification token")
-			http.Error(w, "Invalid or expired verification token", http.StatusBadRequest)
-		} else {
-			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Database error: %v", err))
-			http.Error(w, "Database error", http.StatusInternalServerError)
-		}
-		return
-	}
-
-	// Update user status and clear token
-	update := bson.M{
-		"$set":   bson.M{"status": "verified"},
-		"$unset": bson.M{"verification_token": ""},
-	}
-
-	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
-	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to verify user: %v", err))
-		http.Error(w, "Failed to verify user", http.StatusInternalServerError)
-		return
-	}
-
-	utils.AddToLogMessage(&logMessageBuilder, "Email verification completed")
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"message": "Email verification completed! Kindly proceed with login",
-	})
-}
-
 // VerifyOTPHandler handles OTP verification
 func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -423,7 +365,6 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate OTP
-	// Temporary: Generate OTP manually here since we don't have utils.GenerateOTP yet
 	otpCode := ""
 	for i := 0; i < 6; i++ {
 		b := make([]byte, 1)

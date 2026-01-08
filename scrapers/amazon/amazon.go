@@ -419,24 +419,58 @@ func (s *AmazonScraper) ScrapeProduct(url string) (*models.Product, error) {
 		})
 	}
 
-	// 7. Images (Main)
-	imageJson := doc.Find("#landingImage").AttrOr("data-a-dynamic-image", "")
-	if imageJson == "" {
-		imageJson = doc.Find("#imgBlkFront").AttrOr("data-a-dynamic-image", "")
+	// 7. Images (Main & Alt Views)
+	// Strategy:
+	// 1. Look for #altImages or #imageBlock thumbnails.
+	// 2. These usually represent different views.
+	// 3. Convert thumbnail URL to high-res URL.
+
+	// Helper to convert to high res
+	toHighRes := func(url string) string {
+		// URLs usually look like: .../I/71sbtz8S+aL._AC_US40_.jpg
+		// We want to remove the ._..._.jpg part before the extension
+		// Regex to find the pattern `\._.+_\.` and replace with `.`
+		// Or simpler: remove everything between `._` and the last `.`
+
+		re := regexp.MustCompile(`\._.+_\.`)
+		return re.ReplaceAllString(url, ".")
 	}
-	if imageJson != "" {
-		var images map[string]interface{}
-		if err := json.Unmarshal([]byte(imageJson), &images); err == nil {
-			for url := range images {
-				product.Images = append(product.Images, url)
+
+	var foundImages []string
+
+	// Try Alt Images
+	doc.Find("#altImages ul li.item img").Each(func(i int, s *goquery.Selection) {
+		src := s.AttrOr("src", "")
+		if src != "" {
+			foundImages = append(foundImages, toHighRes(src))
+		}
+	})
+
+	// If alt images not found (single image product?), try landingImage
+	if len(foundImages) == 0 {
+		imageJson := doc.Find("#landingImage").AttrOr("data-a-dynamic-image", "")
+		if imageJson == "" {
+			imageJson = doc.Find("#imgBlkFront").AttrOr("data-a-dynamic-image", "")
+		}
+		if imageJson != "" {
+			var images map[string]interface{}
+			if err := json.Unmarshal([]byte(imageJson), &images); err == nil {
+				// Pick the largest image URL? Or just the first one?
+				// The keys are URLs.
+				for url := range images {
+					foundImages = append(foundImages, url)
+					break // Just take one Main image if we rely on this, to avoid duplicates
+				}
+			}
+		} else {
+			src := doc.Find("#landingImage").AttrOr("src", "")
+			if src != "" {
+				foundImages = append(foundImages, src)
 			}
 		}
-	} else {
-		src := doc.Find("#landingImage").AttrOr("src", "")
-		if src != "" {
-			product.Images = append(product.Images, src)
-		}
 	}
+
+	product.Images = foundImages
 
 	// --- Variant / Twister Logic ---
 	// Scan ALL scripts to find the scattered data pieces

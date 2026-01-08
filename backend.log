@@ -1,0 +1,6 @@
+2026/01/08 15:44:43 Connected to MongoDB!
+2026/01/08 15:44:43 S3 Client Initialized
+Server starting on port 8080...
+Usage: curl "http://localhost:8080/scrape?url=<product_url>"
+2026/01/08 15:44:43 Server failed to start: listen tcp :8080: bind: address already in use
+exit status 1

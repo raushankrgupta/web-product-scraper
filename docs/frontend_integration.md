@@ -68,8 +68,8 @@ This guide covers the integration with the Fitly Backend API, including Authenti
 
 ---
 
-## Product & Fitting (Protected/Public?)
-> **Note**: Currently `/product/details` checks for auth depending on implementation, but `/fitting/generate` is protected.
+## Product & Fitting (Protected)
+> **Note**: `/product/details` and `/try-on` require authentication.
 
 ### 1. Get Product Details (Scrape)
 - **Endpoint**: `POST /product/details`
@@ -84,21 +84,4 @@ This guide covers the integration with the Fitly Backend API, including Authenti
   }
   ```
 
-### 2. Generate Fitting
-- **Endpoint**: `POST /fitting/generate`
-- **Body**:
-  ```json
-  {
-    "product_id": "scraped_product_id_or_url?", // Currently logic accepts product_id but scraping returns data. frontend might need to pass product details or ID if stored. 
-    // UPDATE: The backend currently mocks this. For now pass a dummy ID or the URL if the backend logic evolves.
-    "person_id": "mongo_person_id"
-  }
-  ```
-- **Response**: `200 OK`
-  ```json
-  {
-    "fitting_score": 85,
-    "feedback": "The fit looks good...",
-    "visual_url": "..."
-  }
-  ```
+

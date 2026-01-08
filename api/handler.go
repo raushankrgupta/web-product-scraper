@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/scrapers"
 	"github.com/raushankrgupta/web-product-scraper/utils"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // ScrapeHandler handles the scraping request
@@ -53,14 +55,6 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 	utils.AddToLogMessage(&logMessageBuilder, "Scraping successful")
 
-	// Optional: Download images (preserving original functionality)
-	// In a real API, we might just return the URLs, but the user asked for "expected output"
-	// and the original code downloaded images.
-	// We will do it asynchronously or just do it here.
-	// For now, let's do it here to match original behavior, but maybe we should just return URLs.
-	// The original main.go printed JSON and saved to file.
-	// Here we return JSON.
-
 	// Collect all images
 	var allImages []string
 	allImages = append(allImages, product.Images...)
@@ -82,37 +76,97 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Download images
+	// Upload images to S3
 	folderName := "product_images"
-	urlToPath, err := utils.DownloadImages(dedupedImages, folderName)
+	urlToKey, err := utils.UploadImagesToS3(r.Context(), dedupedImages, folderName)
 	if err != nil {
-		fmt.Printf("Error downloading images: %v\n", err)
-		// We don't fail the request if image download fails, just log it
+		fmt.Printf("Error uploading images: %v\n", err)
 	}
 
-	// Update product with local paths if needed.
-	// The original code updated the product struct with local paths.
-	// If we want to return the local paths in the JSON response, we should update it.
+	// Update product with S3 keys (stored in database)
+	// We also want to return Presigned URLs in response, so we'll need a way to map Key -> URL.
+	// For simplicity, we update the product struct to have Keys for DB,
+	// AND we clone or modifying it again for response?
+	// The variable 'product' is what is saved AND returned.
+	// If we save URLs (presigned), they will expire. We MUST save KEYS in DB.
+	// So:
+	// 1. Update 'product' to have KEYS.
+	// 2. Save 'product' to DB.
+	// 3. Update 'product' (in memory) to have PRESIGNED URLs.
+	// 4. Return 'product'.
 
-	var localMainImages []string
+	var localMainKeys []string
 	for _, img := range product.Images {
-		if path, ok := urlToPath[img]; ok {
-			localMainImages = append(localMainImages, path)
+		if key, ok := urlToKey[img]; ok {
+			localMainKeys = append(localMainKeys, key)
 		} else {
-			localMainImages = append(localMainImages, img) // Fallback to URL
+			localMainKeys = append(localMainKeys, img) // Fallback
 		}
 	}
-	product.Images = localMainImages
+	product.Images = localMainKeys
 
 	for i := range product.Variants {
-		var localVarImages []string
+		var localVarKeys []string
 		for _, img := range product.Variants[i].Images {
-			if path, ok := urlToPath[img]; ok {
-				localVarImages = append(localVarImages, path)
+			if key, ok := urlToKey[img]; ok {
+				localVarKeys = append(localVarKeys, key)
 			} else {
-				localVarImages = append(localVarImages, img)
+				localVarKeys = append(localVarKeys, img)
 			}
 		}
-		product.Variants[i].Images = localVarImages
+		product.Variants[i].Images = localVarKeys
+	}
+
+	// Capture UserID
+	userID, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		// Log error but proceed? Or fail?
+		// Since route is protected now, this should theoretically not happen if middleware works.
+		// But let's handle it safely.
+		utils.AddToLogMessage(&logMessageBuilder, "Warning: UserID not found in context")
+	}
+
+	// Save to MongoDB
+	product.ID = primitive.NewObjectID()
+	product.UserID = userID
+	product.CreatedAt = time.Now()
+
+	collection := utils.GetCollection("fitly", "products")
+	ctx := r.Context()
+	_, err = collection.InsertOne(ctx, product)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save product to MongoDB: %v", err))
+		// We might still want to return the product even if DB save fails, or error out.
+		// Let's log and proceed for now, or maybe add a warning to response.
+	} else {
+		utils.AddToLogMessage(&logMessageBuilder, "Product saved to MongoDB")
+	}
+
+	// Generate Presigned URLs for response
+	// Note: We modifying 'product' in place, which is fine since it's already saved.
+
+	// Process Main Images
+	var presignedMainURLs []string
+	for _, key := range product.Images {
+		if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
+			presignedMainURLs = append(presignedMainURLs, url)
+		} else {
+			presignedMainURLs = append(presignedMainURLs, key)
+		}
+	}
+	product.Images = presignedMainURLs
+
+	// Process Variant Images
+	for i := range product.Variants {
+		var presignedVarURLs []string
+		for _, key := range product.Variants[i].Images {
+			if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
+				presignedVarURLs = append(presignedVarURLs, url)
+			} else {
+				presignedVarURLs = append(presignedVarURLs, key)
+			}
+		}
+		product.Variants[i].Images = presignedVarURLs
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -120,36 +174,4 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error encoding response", http.StatusInternalServerError)
 		return
 	}
-}
-
-// GenerateFittingHandler generates a fitting look
-func GenerateFittingHandler(w http.ResponseWriter, r *http.Request) {
-	userIdStr, err := GetUserIDFromContext(r.Context())
-	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	_ = userIdStr // used for logging if needed
-
-	var req struct {
-		ProductID string `json:"product_id"`
-		PersonID  string `json:"person_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	// Logic to fetch person and product, and run ML
-	// For now, we return a mock response as "The core fitting logic" is not fully defined/implemented in this context yet.
-	// We assume try-on_handler.go has some logic we could reuse, but requirements asked for this endpoint structure.
-
-	response := map[string]interface{}{
-		"fitting_score": 85,
-		"feedback":      "The fit looks good, sleeves are perfect length.",
-		"visual_url":    "http://localhost:8081/generated_images/mock_fitting_result.jpg",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
 }
