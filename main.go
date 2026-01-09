@@ -43,6 +43,7 @@ func main() {
 	http.Handle("/auth/login", corsMiddleware(http.HandlerFunc(api.LoginHandler)))
 	http.Handle("/auth/forgot-password", corsMiddleware(http.HandlerFunc(api.ForgotPasswordHandler)))
 	http.Handle("/auth/reset-password", corsMiddleware(http.HandlerFunc(api.ResetPasswordHandler)))
+	http.Handle("/auth/change-password", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ChangePasswordHandler))))
 
 	http.Handle("/product/details", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler))))
 
@@ -51,6 +52,7 @@ func main() {
 	http.Handle("/persons/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
 
 	http.Handle("/try-on", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.VirtualTryOnHandler))))
+	http.Handle("/gallery", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
 
 	port := config.Port
 	fmt.Printf("Server starting on port %s...\n", port)

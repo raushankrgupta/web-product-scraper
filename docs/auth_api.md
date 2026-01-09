@@ -127,3 +127,29 @@
   "message": "Password reset successfully. Please login with your new password."
 }
 ```
+
+---
+
+### 6. Change Password
+**Endpoint:** `POST /auth/change-password`
+**Description:** Allows a logged-in user to change their password by providing the current password.
+**Authentication:** Required (Bearer Token)
+
+**Request Body:**
+```json
+{
+  "current_password": "oldSecurePassword123",
+  "new_password": "newSuperSecurePassword456"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "Password changed successfully"
+}
+```
+
+**Response (401 Unauthorized):**
+- Invalid current password
+

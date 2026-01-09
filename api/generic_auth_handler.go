@@ -142,7 +142,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		utils.AddToLogMessage(&logMessageBuilder, "User registered successfully. Sent OTP email.")
 	}
 
-	newUser.ID = res.InsertedID.(interface{}).(primitive.ObjectID)
+	newUser.ID = res.InsertedID.(primitive.ObjectID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -470,5 +470,100 @@ func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Password reset successfully. Please login with your new password.",
+	})
+}
+
+// ChangePasswordRequest represents the payload for changing password
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// ChangePasswordHandler handles password change for logged-in users
+func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Change Password API]")
+
+	if r.Method != http.MethodPost {
+		utils.AddToLogMessage(&logMessageBuilder, "Method not allowed")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get User ID from Context
+	userID, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID in context")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req ChangePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Invalid request body: %v", err))
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		utils.AddToLogMessage(&logMessageBuilder, "Current and New Password are required")
+		http.Error(w, "Current and New Password are required", http.StatusBadRequest)
+		return
+	}
+
+	// Fetch User
+	objID, err := primitive.ObjectIDFromHex(userID)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "Invalid user ID format")
+		http.Error(w, "Invalid user ID", http.StatusBadRequest)
+		return
+	}
+
+	collection := utils.GetCollection("fitly", "users")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var user models.User
+	err = collection.FindOne(ctx, bson.M{"_id": objID}).Decode(&user)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("User not found: %s", userID))
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify Current Password
+	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.CurrentPassword))
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "Invalid current password")
+		http.Error(w, "Invalid current password", http.StatusUnauthorized)
+		return
+	}
+
+	// Hash New Password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to hash new password: %v", err))
+		http.Error(w, "Failed to update password", http.StatusInternalServerError)
+		return
+	}
+
+	// Update Password
+	update := bson.M{
+		"$set": bson.M{"password": string(hashedPassword)},
+	}
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to update password in DB: %v", err))
+		http.Error(w, "Failed to update password", http.StatusInternalServerError)
+		return
+	}
+
+	utils.AddToLogMessage(&logMessageBuilder, "Password changed successfully")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Password changed successfully",
 	})
 }
