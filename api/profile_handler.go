@@ -38,8 +38,15 @@ func PersonHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func createPerson(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Create Person API]")
+
 	userIdStr, err := GetUserIDFromContext(r.Context())
 	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -132,8 +139,15 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 }
 
 func getPersons(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Get Persons API]")
+
 	userIdStr, err := GetUserIDFromContext(r.Context())
 	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -216,8 +230,15 @@ func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID 
 }
 
 func deletePerson(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Delete Person API]")
+
 	userIdStr, err := GetUserIDFromContext(r.Context())
 	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -253,8 +274,15 @@ func deletePerson(w http.ResponseWriter, r *http.Request) {
 }
 
 func updatePerson(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Update Person API]")
+
 	userIdStr, err := GetUserIDFromContext(r.Context())
 	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
