@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // RespondJSON sends a JSON response with the given status code and payload.
@@ -46,4 +47,14 @@ func PresignImageURLs(ctx context.Context, images []string) []string {
 		}
 	}
 	return presignedURLs
+}
+
+// LatencyMiddleware logs the duration of each request
+func LatencyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		duration := time.Since(start)
+		fmt.Printf("[LATENCY] %s %s - %v\n", r.Method, r.URL.Path, duration)
+	})
 }
