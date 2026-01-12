@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/models"
-	"github.com/raushankrgupta/web-product-scraper/scrapers"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -19,8 +18,8 @@ import (
 
 // TryOnRequest represents the request body for virtual try-on
 type TryOnRequest struct {
-	ProductURL string `json:"product_url"`
-	PersonID   string `json:"person_id"`
+	ProductID string `json:"product_id"`
+	PersonID  string `json:"person_id"`
 }
 
 // VirtualTryOnHandler handles the virtual try-on request
@@ -49,28 +48,35 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ProductURL == "" || req.PersonID == "" {
-		utils.AddToLogMessage(&logMessageBuilder, "Missing product_url or person_id")
-		http.Error(w, "product_url and person_id are required", http.StatusBadRequest)
+	// Validate input
+	if req.ProductID == "" {
+		utils.AddToLogMessage(&logMessageBuilder, "Missing product_id")
+		http.Error(w, "product_id is required", http.StatusBadRequest)
 		return
 	}
 
-	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Try-On Request: PersonID=%s, URL=%s", req.PersonID, req.ProductURL))
+	if req.PersonID == "" {
+		utils.AddToLogMessage(&logMessageBuilder, "Missing person_id")
+		http.Error(w, "person_id is required", http.StatusBadRequest)
+		return
+	}
+
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Try-On Request: PersonID=%s, ProductID=%s", req.PersonID, req.ProductID))
 
 	// 1. Fetch Person Data
-	objID, err := primitive.ObjectIDFromHex(req.PersonID)
+	personObjID, err := primitive.ObjectIDFromHex(req.PersonID)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, "Invalid person ID")
 		http.Error(w, "Invalid person ID", http.StatusBadRequest)
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "person")
+	personCollection := utils.GetCollection("fitly", "person")
 	var person models.Person
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err = collection.FindOne(ctx, bson.M{"_id": objID}).Decode(&person)
+	err = personCollection.FindOne(ctx, bson.M{"_id": personObjID}).Decode(&person)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Person not found: %v", err))
 		http.Error(w, "Person not found", http.StatusNotFound)
@@ -83,22 +89,28 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Scrape Product Data
-	scraper, err := scrapers.GetScraper(req.ProductURL)
+	// 2. Get Product Data (from DB)
+	var product models.Product
+	var productURL string
+
+	// Fetch from database
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Fetching product from DB: %s", req.ProductID))
+	productObjID, err := primitive.ObjectIDFromHex(req.ProductID)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to get scraper: %v", err))
-		http.Error(w, "Failed to get scraper: "+err.Error(), http.StatusBadRequest)
+		utils.AddToLogMessage(&logMessageBuilder, "Invalid product ID")
+		http.Error(w, "Invalid product ID", http.StatusBadRequest)
 		return
 	}
 
-	product, err := scraper.ScrapeProduct(req.ProductURL)
+	productCollection := utils.GetCollection("fitly", "products")
+	err = productCollection.FindOne(ctx, bson.M{"_id": productObjID}).Decode(&product)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to scrape product: %v", err))
-		http.Error(w, "Failed to scrape product: "+err.Error(), http.StatusInternalServerError)
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Product not found in DB: %v", err))
+		http.Error(w, "Product not found", http.StatusNotFound)
 		return
 	}
-
-	utils.AddToLogMessage(&logMessageBuilder, "Product scraped successfully")
+	productURL = product.URL // Get URL from database
+	utils.AddToLogMessage(&logMessageBuilder, "Product fetched from database")
 
 	// 3. Call Gemini API
 	// Construct person details string
@@ -154,15 +166,16 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		ID:                primitive.NewObjectID(),
 		UserID:            userID,
 		PersonID:          req.PersonID,
-		ProductURL:        req.ProductURL,
+		ProductURL:        productURL,
+		ProductID:         req.ProductID,
 		PersonImageURL:    personImageKey, // Store Key
 		GeneratedImageURL: objectKey,      // Store Key
 		Status:            "completed",
 		CreatedAt:         time.Now(),
 	}
 
-	collection = utils.GetCollection("fitly", "tryons")
-	_, err = collection.InsertOne(context.Background(), tryOnRecord)
+	tryOnCollection := utils.GetCollection("fitly", "tryons")
+	_, err = tryOnCollection.InsertOne(context.Background(), tryOnRecord)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save try-on record: %v", err))
 		// We proceed to return the response even if DB save fails

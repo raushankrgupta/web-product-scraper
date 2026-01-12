@@ -18,6 +18,7 @@ type Variant struct {
 type Product struct {
 	ID               primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	UserID           string             `bson:"user_id" json:"user_id"`
+	URL              string             `bson:"url" json:"url"` // Original product URL
 	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`
 	Title            string             `json:"title" bson:"title"`
 	MRP              string             `json:"mrp"`              // Maximum Retail Price (List Price)

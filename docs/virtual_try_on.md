@@ -18,13 +18,13 @@ Ensure the backend is running and `GEMINI_API_KEY` is set in your `.env` file.
 
 ```json
 {
-  "product_url": "https://www.amazon.in/dp/B0...",
+  "product_id": "507f1f77bcf86cd799439011",
   "person_id": "64f8a..."
 }
 ```
 
--   `product_url`: The URL of the product to try on (e.g., Amazon product page).
--   `person_id`: The MongoDB ID of the person profile to use.
+-   `product_id`: (Required) The MongoDB ID of a previously scraped product.
+-   `person_id`: (Required) The MongoDB ID of the person profile to use.
 
 **Response:**
 
@@ -38,16 +38,15 @@ The `result` field will contain the output from Gemini. This could be a descript
 
 ## Integration Flow
 
-1.  **User Selects Product**: User provides a product URL.
-2.  **User Selects Profile**: User selects their profile (Person ID).
-3.  **Frontend Request**: Frontend sends a POST request to `/try-on`.
-4.  **Backend Processing**:
-    -   Backend scrapes the product details.
-    -   Backend fetches the person's details and image.
-    -   Backend sends both to Gemini API with a prompt to generate a try-on image.
+1.  **Scrape Product**: Call `POST /product/details` with product URL.
+2.  **Save Product ID**: Store the returned `product.id`.
+3.  **User Selects Profile**: User selects their profile (Person ID).
+4.  **Try-On Request**: Call `POST /try-on` with `product_id` and `person_id`.
 5.  **Display Result**: Frontend displays the generated result.
+
 
 ## Notes
 
+-   **Performance**: Using `product_id` is significantly faster as it avoids re-scraping the product.
 -   **Image Access**: The backend currently expects the person's image path to be a publicly accessible URL for Gemini to access it (if using URL-based processing) or handles it internally. Ensure `person.image_paths` contains valid URLs.
 -   **Model**: The integration uses `gemini-1.5-pro`.

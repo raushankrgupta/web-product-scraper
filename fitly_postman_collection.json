@@ -704,7 +704,7 @@
                         "header": [],
                         "body": {
                             "mode": "raw",
-                            "raw": "{\n    \"product_url\": \"https://www.amazon.com/dp/B08J5F3G18\",\n    \"person_id\": \"{{person_id}}\"\n}",
+                            "raw": "{\n    \"product_id\": \"{{product_id}}\",\n    \"person_id\": \"{{person_id}}\"\n}",
                             "options": {
                                 "raw": {
                                     "language": "json"
@@ -739,6 +739,11 @@
         },
         {
             "key": "person_id",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "product_id",
             "value": "",
             "type": "string"
         }

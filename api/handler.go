@@ -129,6 +129,7 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	// Save to MongoDB
 	product.ID = primitive.NewObjectID()
 	product.UserID = userID
+	product.URL = productURL
 	product.CreatedAt = time.Now()
 
 	collection := utils.GetCollection("fitly", "products")
