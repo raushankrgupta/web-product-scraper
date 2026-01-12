@@ -112,6 +112,27 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	productURL = product.URL // Get URL from database
 	utils.AddToLogMessage(&logMessageBuilder, "Product fetched from database")
 
+	// Pre-process Product Images: Ensure they are accessible URLs (Presign if S3 keys)
+	var processedProductImages []string
+	for _, img := range product.Images {
+		if img == "" {
+			continue
+		}
+		if !strings.HasPrefix(img, "http") {
+			// Assume S3 key
+			presigned, err := utils.GetPresignedURL(r.Context(), img)
+			if err != nil {
+				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to presign product image %s: %v", img, err))
+				continue // Skip failing images
+			}
+			processedProductImages = append(processedProductImages, presigned)
+		} else {
+			processedProductImages = append(processedProductImages, img)
+		}
+	}
+	// Use processed images
+	product.Images = processedProductImages
+
 	// 3. Call Gemini API
 	// Construct person details string
 	personDetails := fmt.Sprintf("Gender: %s, Height: %.2f cm, Weight: %.2f kg, Chest: %.2f, Waist: %.2f, Hips: %.2f",
