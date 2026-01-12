@@ -166,7 +166,7 @@ func getPersons(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cursor, err := collection.Find(ctx, bson.M{"user_id": userID})
+	cursor, err := collection.Find(ctx, bson.M{"user_id": userID, "is_deleted": bson.M{"$ne": true}})
 	if err != nil {
 		http.Error(w, "Error fetching persons", http.StatusInternalServerError)
 		return
@@ -208,7 +208,7 @@ func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID 
 	defer cancel()
 
 	var person models.Person
-	err = collection.FindOne(ctx, bson.M{"_id": personID, "user_id": userID}).Decode(&person)
+	err = collection.FindOne(ctx, bson.M{"_id": personID, "user_id": userID, "is_deleted": bson.M{"$ne": true}}).Decode(&person)
 	if err != nil {
 		http.Error(w, "Person not found", http.StatusNotFound)
 		return
@@ -259,13 +259,15 @@ func deletePerson(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := collection.DeleteOne(ctx, bson.M{"_id": personID, "user_id": userID})
+	// Soft delete: set is_deleted = true
+	update := bson.M{"$set": bson.M{"is_deleted": true, "updated_at": time.Now()}}
+	result, err := collection.UpdateOne(ctx, bson.M{"_id": personID, "user_id": userID}, update)
 	if err != nil {
 		http.Error(w, "Error deleting person", http.StatusInternalServerError)
 		return
 	}
 
-	if result.DeletedCount == 0 {
+	if result.MatchedCount == 0 {
 		http.Error(w, "Person not found or unauthorized", http.StatusNotFound)
 		return
 	}
@@ -310,9 +312,9 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 1. Fetch existing person to verify ownership
+	// 1. Fetch existing person to verify ownership and check if deleted
 	var person models.Person
-	err = collection.FindOne(ctx, bson.M{"_id": personID, "user_id": userID}).Decode(&person)
+	err = collection.FindOne(ctx, bson.M{"_id": personID, "user_id": userID, "is_deleted": bson.M{"$ne": true}}).Decode(&person)
 	if err != nil {
 		http.Error(w, "Person not found", http.StatusNotFound)
 		return

@@ -21,4 +21,5 @@ type Person struct {
 	ImagePaths []string           `bson:"image_paths" json:"image_paths"`
 	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt  time.Time          `bson:"updated_at" json:"updated_at"`
+	IsDeleted  bool               `bson:"is_deleted" json:"is_deleted"` // Soft delete flag
 }
