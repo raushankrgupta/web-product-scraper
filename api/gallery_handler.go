@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -24,6 +23,7 @@ type GalleryResponse struct {
 }
 
 // GalleryHandler handles fetching the user's generated images
+// GalleryHandler handles fetching the user's generated images
 func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
@@ -32,16 +32,14 @@ func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 	utils.AddToLogMessage(&logMessageBuilder, "[Gallery API]")
 
 	if r.Method != http.MethodGet {
-		utils.AddToLogMessage(&logMessageBuilder, "Method not allowed")
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// 1. Get User ID from Context
 	userID, err := GetUserIDFromContext(r.Context())
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID in context")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID in context", http.StatusUnauthorized)
 		return
 	}
 
@@ -76,8 +74,7 @@ func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 
 	total, err := collection.CountDocuments(ctx, filter)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to count documents: %v", err))
-		http.Error(w, "Failed to fetch data", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, "Failed to count documents", http.StatusInternalServerError)
 		return
 	}
 
@@ -91,8 +88,7 @@ func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 
 	cursor, err := collection.Find(ctx, filter, findOptions)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Database query failed: %v", err))
-		http.Error(w, "Failed to fetch data", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Database query failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -100,8 +96,7 @@ func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 
 	var tryOns []models.TryOn
 	if err = cursor.All(ctx, &tryOns); err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to decode data: %v", err))
-		http.Error(w, "Failed to decode data", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, "Failed to decode data", http.StatusInternalServerError)
 		return
 	}
 
@@ -143,6 +138,5 @@ func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Found %d images", len(tryOns)))
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	utils.RespondJSON(w, http.StatusOK, response)
 }

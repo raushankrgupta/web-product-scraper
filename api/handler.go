@@ -13,6 +13,7 @@ import (
 )
 
 // ScrapeHandler handles the scraping request
+// ScrapeHandler handles the scraping request
 func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
@@ -33,8 +34,7 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if productURL == "" {
-		utils.AddToLogMessage(&logMessageBuilder, "URL parameter missing")
-		http.Error(w, "Please provide a 'url' query parameter or JSON body", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Please provide a 'url' query parameter or JSON body", http.StatusBadRequest)
 		return
 	}
 
@@ -42,14 +42,13 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 	scraper, err := scrapers.GetScraper(productURL)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error finding scraper: %v", err), http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error finding scraper: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	product, err := scraper.ScrapeProduct(productURL)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Scraping failed: %v", err))
-		http.Error(w, fmt.Sprintf("Scraping failed: %v", err), http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Scraping failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -75,26 +74,16 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Download images
 	// Upload images to S3
 	folderName := "product_images"
 	urlToKey, err := utils.UploadImagesToS3(r.Context(), dedupedImages, folderName)
 	if err != nil {
-		fmt.Printf("Error uploading images: %v\n", err)
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Error uploading images: %v", err))
+		// We continue even if some uploads fail, relying on what succeeded or original URLs
 	}
 
 	// Update product with S3 keys (stored in database)
-	// We also want to return Presigned URLs in response, so we'll need a way to map Key -> URL.
-	// For simplicity, we update the product struct to have Keys for DB,
-	// AND we clone or modifying it again for response?
-	// The variable 'product' is what is saved AND returned.
-	// If we save URLs (presigned), they will expire. We MUST save KEYS in DB.
-	// So:
-	// 1. Update 'product' to have KEYS.
-	// 2. Save 'product' to DB.
-	// 3. Update 'product' (in memory) to have PRESIGNED URLs.
-	// 4. Return 'product'.
-
+	// We map the scraped image URLs to the S3 keys we just got.
 	var localMainKeys []string
 	for _, img := range product.Images {
 		if key, ok := urlToKey[img]; ok {
@@ -120,9 +109,6 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	// Capture UserID
 	userID, err := GetUserIDFromContext(r.Context())
 	if err != nil {
-		// Log error but proceed? Or fail?
-		// Since route is protected now, this should theoretically not happen if middleware works.
-		// But let's handle it safely.
 		utils.AddToLogMessage(&logMessageBuilder, "Warning: UserID not found in context")
 	}
 
@@ -137,42 +123,15 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	_, err = collection.InsertOne(ctx, product)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save product to MongoDB: %v", err))
-		// We might still want to return the product even if DB save fails, or error out.
-		// Let's log and proceed for now, or maybe add a warning to response.
 	} else {
 		utils.AddToLogMessage(&logMessageBuilder, "Product saved to MongoDB")
 	}
 
 	// Generate Presigned URLs for response
-	// Note: We modifying 'product' in place, which is fine since it's already saved.
-
-	// Process Main Images
-	var presignedMainURLs []string
-	for _, key := range product.Images {
-		if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
-			presignedMainURLs = append(presignedMainURLs, url)
-		} else {
-			presignedMainURLs = append(presignedMainURLs, key)
-		}
-	}
-	product.Images = presignedMainURLs
-
-	// Process Variant Images
+	product.Images = utils.PresignImageURLs(r.Context(), product.Images)
 	for i := range product.Variants {
-		var presignedVarURLs []string
-		for _, key := range product.Variants[i].Images {
-			if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
-				presignedVarURLs = append(presignedVarURLs, url)
-			} else {
-				presignedVarURLs = append(presignedVarURLs, key)
-			}
-		}
-		product.Variants[i].Images = presignedVarURLs
+		product.Variants[i].Images = utils.PresignImageURLs(r.Context(), product.Variants[i].Images)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(product); err != nil {
-		http.Error(w, "Error encoding response", http.StatusInternalServerError)
-		return
-	}
+	utils.RespondJSON(w, http.StatusOK, product)
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -23,6 +22,7 @@ type TryOnRequest struct {
 }
 
 // VirtualTryOnHandler handles the virtual try-on request
+// VirtualTryOnHandler handles the virtual try-on request
 func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
@@ -31,33 +31,19 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	utils.AddToLogMessage(&logMessageBuilder, "[Virtual Try-On API]")
 
 	if r.Method != http.MethodPost {
-		utils.AddToLogMessage(&logMessageBuilder, "Method not allowed")
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Debug: Print raw body
-	bodyBytes, _ := io.ReadAll(r.Body)
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore body for decoder
-	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Received Body: %s", string(bodyBytes)))
-
 	var req TryOnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Invalid request body: %v", err))
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	// Validate input
-	if req.ProductID == "" {
-		utils.AddToLogMessage(&logMessageBuilder, "Missing product_id")
-		http.Error(w, "product_id is required", http.StatusBadRequest)
-		return
-	}
-
-	if req.PersonID == "" {
-		utils.AddToLogMessage(&logMessageBuilder, "Missing person_id")
-		http.Error(w, "person_id is required", http.StatusBadRequest)
+	if req.ProductID == "" || req.PersonID == "" {
+		utils.RespondError(w, &logMessageBuilder, "product_id and person_id are required", http.StatusBadRequest)
 		return
 	}
 
@@ -66,8 +52,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	// 1. Fetch Person Data
 	personObjID, err := primitive.ObjectIDFromHex(req.PersonID)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, "Invalid person ID")
-		http.Error(w, "Invalid person ID", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Invalid person ID", http.StatusBadRequest)
 		return
 	}
 
@@ -78,78 +63,51 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 
 	err = personCollection.FindOne(ctx, bson.M{"_id": personObjID}).Decode(&person)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Person not found: %v", err))
-		http.Error(w, "Person not found", http.StatusNotFound)
+		utils.RespondError(w, &logMessageBuilder, "Person not found", http.StatusNotFound)
 		return
 	}
 
 	if len(person.ImagePaths) == 0 {
-		utils.AddToLogMessage(&logMessageBuilder, "Person has no images")
-		http.Error(w, "Person has no images", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Person has no images", http.StatusBadRequest)
 		return
 	}
 
 	// 2. Get Product Data (from DB)
 	var product models.Product
-	var productURL string
-
 	// Fetch from database
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Fetching product from DB: %s", req.ProductID))
 	productObjID, err := primitive.ObjectIDFromHex(req.ProductID)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, "Invalid product ID")
-		http.Error(w, "Invalid product ID", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Invalid product ID", http.StatusBadRequest)
 		return
 	}
 
 	productCollection := utils.GetCollection("fitly", "products")
 	err = productCollection.FindOne(ctx, bson.M{"_id": productObjID}).Decode(&product)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Product not found in DB: %v", err))
-		http.Error(w, "Product not found", http.StatusNotFound)
+		utils.RespondError(w, &logMessageBuilder, "Product not found", http.StatusNotFound)
 		return
 	}
-	productURL = product.URL // Get URL from database
 	utils.AddToLogMessage(&logMessageBuilder, "Product fetched from database")
 
-	// Pre-process Product Images: Ensure they are accessible URLs (Presign if S3 keys)
-	var processedProductImages []string
-	for _, img := range product.Images {
-		if img == "" {
-			continue
-		}
-		if !strings.HasPrefix(img, "http") {
-			// Assume S3 key
-			presigned, err := utils.GetPresignedURL(r.Context(), img)
-			if err != nil {
-				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to presign product image %s: %v", img, err))
-				continue // Skip failing images
-			}
-			processedProductImages = append(processedProductImages, presigned)
-		} else {
-			processedProductImages = append(processedProductImages, img)
-		}
-	}
-	// Use processed images
-	product.Images = processedProductImages
+	// Pre-process Product Images: Ensure they are accessible URLs
+	// We use our helper which handles checking if it's already a URL or needs presigning
+	product.Images = utils.PresignImageURLs(r.Context(), product.Images)
 
 	// 3. Call Gemini API
 	// Construct person details string
 	personDetails := fmt.Sprintf("Gender: %s, Height: %.2f cm, Weight: %.2f kg, Chest: %.2f, Waist: %.2f, Hips: %.2f",
 		person.Gender, person.Height, person.Weight, person.Chest, person.Waist, person.Hips)
 
-	// Use the first image of the person and product for now
-	// Person Image Path is now an S3 Key, so we need to generate a Presigned URL (or read it and pass bytes, but existing helper fetches from URL)
+	// Use the first image of the person
 	personImageKey := person.ImagePaths[0]
 	personImageURL, err := utils.GetPresignedURL(r.Context(), personImageKey)
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to get presigned URL for person image: %v", err))
-		http.Error(w, "Failed to get person image", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to get presigned URL for person image: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	// Use a background context with timeout for the heavy Gemini call
-	// This prevents the operation from being aborted if the client disconnects/times out
 	geminiCtx, cancelGemini := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancelGemini()
 
@@ -157,9 +115,9 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to generate try-on image: %v", err))
 		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "quota") {
-			http.Error(w, "Quota exceeded. Please try again later.", http.StatusTooManyRequests)
+			utils.RespondError(w, nil, "Quota exceeded. Please try again later.", http.StatusTooManyRequests)
 		} else {
-			http.Error(w, "Failed to generate try-on image: "+err.Error(), http.StatusInternalServerError)
+			utils.RespondError(w, nil, "Failed to generate try-on image: "+err.Error(), http.StatusInternalServerError)
 		}
 		return
 	}
@@ -172,8 +130,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	// generatedContent is []byte
 	_, err = utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err))
-		http.Error(w, "Failed to upload generated image", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -187,7 +144,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		ID:                primitive.NewObjectID(),
 		UserID:            userID,
 		PersonID:          req.PersonID,
-		ProductURL:        productURL,
+		ProductURL:        product.URL,
 		ProductID:         req.ProductID,
 		PersonImageURL:    personImageKey, // Store Key
 		GeneratedImageURL: objectKey,      // Store Key
@@ -207,10 +164,9 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	tryOnRecord.GeneratedImageURL = presignedGeneratedURL
 
 	// 5. Return Response
-	w.Header().Set("Content-Type", "application/json")
 	response := map[string]interface{}{
 		"result":        tryOnRecord.GeneratedImageURL,
 		"tryon_details": tryOnRecord,
 	}
-	json.NewEncoder(w).Encode(response)
+	utils.RespondJSON(w, http.StatusOK, response)
 }

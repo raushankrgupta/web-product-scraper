@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -46,8 +45,7 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 
 	userIdStr, err := GetUserIDFromContext(r.Context())
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID", http.StatusUnauthorized)
 		return
 	}
 	userID, _ := primitive.ObjectIDFromHex(userIdStr)
@@ -55,7 +53,7 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 	// Parse multipart form (max 10MB)
 	err = r.ParseMultipartForm(10 << 20)
 	if err != nil {
-		http.Error(w, "Error parsing form data", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Error parsing form data", http.StatusBadRequest)
 		return
 	}
 
@@ -70,7 +68,7 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 	hipsStr := r.FormValue("hips")
 
 	if name == "" {
-		http.Error(w, "Name is required", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Name is required", http.StatusBadRequest)
 		return
 	}
 
@@ -129,13 +127,12 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 
 	result, err := collection.InsertOne(ctx, person)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error saving to database: %v", err), http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error saving to database: %v", err), http.StatusInternalServerError)
 		return
 	}
 	person.ID = result.InsertedID.(primitive.ObjectID)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(person)
+	utils.RespondJSON(w, http.StatusCreated, person)
 }
 
 func getPersons(w http.ResponseWriter, r *http.Request) {
@@ -147,8 +144,7 @@ func getPersons(w http.ResponseWriter, r *http.Request) {
 
 	userIdStr, err := GetUserIDFromContext(r.Context())
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID", http.StatusUnauthorized)
 		return
 	}
 	userID, _ := primitive.ObjectIDFromHex(userIdStr)
@@ -168,38 +164,29 @@ func getPersons(w http.ResponseWriter, r *http.Request) {
 
 	cursor, err := collection.Find(ctx, bson.M{"user_id": userID, "is_deleted": bson.M{"$ne": true}})
 	if err != nil {
-		http.Error(w, "Error fetching persons", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, "Error fetching persons", http.StatusInternalServerError)
 		return
 	}
 	defer cursor.Close(ctx)
 
 	var persons []models.Person
 	if err = cursor.All(ctx, &persons); err != nil {
-		http.Error(w, "Error decoding persons", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, "Error decoding persons", http.StatusInternalServerError)
 		return
 	}
 
 	// Generate Presigned URLs
 	for i := range persons {
-		var presignedURLs []string
-		for _, key := range persons[i].ImagePaths {
-			if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
-				presignedURLs = append(presignedURLs, url)
-			} else {
-				presignedURLs = append(presignedURLs, key) // Fallback or handle error
-			}
-		}
-		persons[i].ImagePaths = presignedURLs
+		persons[i].ImagePaths = utils.PresignImageURLs(r.Context(), persons[i].ImagePaths)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(persons)
+	utils.RespondJSON(w, http.StatusOK, persons)
 }
 
 func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID primitive.ObjectID) {
 	personID, err := primitive.ObjectIDFromHex(idStr)
 	if err != nil {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		utils.RespondError(w, nil, "Invalid ID", http.StatusBadRequest)
 		return
 	}
 
@@ -210,23 +197,14 @@ func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID 
 	var person models.Person
 	err = collection.FindOne(ctx, bson.M{"_id": personID, "user_id": userID, "is_deleted": bson.M{"$ne": true}}).Decode(&person)
 	if err != nil {
-		http.Error(w, "Person not found", http.StatusNotFound)
+		utils.RespondError(w, nil, "Person not found", http.StatusNotFound)
 		return
 	}
 
 	// Generate Presigned URLs
-	var presignedURLs []string
-	for _, key := range person.ImagePaths {
-		if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
-			presignedURLs = append(presignedURLs, url)
-		} else {
-			presignedURLs = append(presignedURLs, key) // Fallback
-		}
-	}
-	person.ImagePaths = presignedURLs
+	person.ImagePaths = utils.PresignImageURLs(r.Context(), person.ImagePaths)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(person)
+	utils.RespondJSON(w, http.StatusOK, person)
 }
 
 func deletePerson(w http.ResponseWriter, r *http.Request) {
@@ -284,27 +262,26 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 
 	userIdStr, err := GetUserIDFromContext(r.Context())
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, "Unauthorized: No user ID")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID", http.StatusUnauthorized)
 		return
 	}
 	userID, _ := primitive.ObjectIDFromHex(userIdStr)
 
 	pathParts := strings.Split(r.URL.Path, "/")
 	if len(pathParts) < 3 || pathParts[2] == "" {
-		http.Error(w, "Person ID required", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Person ID required", http.StatusBadRequest)
 		return
 	}
 	personID, err := primitive.ObjectIDFromHex(pathParts[2])
 	if err != nil {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Invalid ID", http.StatusBadRequest)
 		return
 	}
 
 	// Parse multipart form (max 10MB)
 	err = r.ParseMultipartForm(10 << 20)
 	if err != nil {
-		http.Error(w, "Error parsing form data", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Error parsing form data", http.StatusBadRequest)
 		return
 	}
 
@@ -316,7 +293,7 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 	var person models.Person
 	err = collection.FindOne(ctx, bson.M{"_id": personID, "user_id": userID, "is_deleted": bson.M{"$ne": true}}).Decode(&person)
 	if err != nil {
-		http.Error(w, "Person not found", http.StatusNotFound)
+		utils.RespondError(w, &logMessageBuilder, "Person not found", http.StatusNotFound)
 		return
 	}
 
@@ -401,21 +378,12 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 	// 4. Perform Update
 	_, err = collection.UpdateOne(ctx, bson.M{"_id": personID}, bson.M{"$set": updateFields})
 	if err != nil {
-		http.Error(w, "Failed to update person", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, "Failed to update person", http.StatusInternalServerError)
 		return
 	}
 
 	// 5. Return Updated Person (with presigned URLs for current images)
-	var presignedURLs []string
-	for _, key := range person.ImagePaths {
-		if url, err := utils.GetPresignedURL(r.Context(), key); err == nil {
-			presignedURLs = append(presignedURLs, url)
-		} else {
-			presignedURLs = append(presignedURLs, key)
-		}
-	}
-	person.ImagePaths = presignedURLs
+	person.ImagePaths = utils.PresignImageURLs(r.Context(), person.ImagePaths)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(person)
+	utils.RespondJSON(w, http.StatusOK, person)
 }
