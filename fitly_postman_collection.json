@@ -502,6 +502,34 @@
                         }
                     },
                     "response": []
+                },
+                {
+                    "name": "Delete Gallery Image",
+                    "request": {
+                        "auth": {
+                            "type": "bearer",
+                            "bearer": [
+                                {
+                                    "key": "token",
+                                    "value": "{{token}}",
+                                    "type": "string"
+                                }
+                            ]
+                        },
+                        "method": "DELETE",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/gallery/{{gallery_image_id}}",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "gallery",
+                                "{{gallery_image_id}}"
+                            ]
+                        }
+                    },
+                    "response": []
                 }
             ]
         },
@@ -565,6 +593,11 @@
         },
         {
             "key": "product_id",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "gallery_image_id",
             "value": "",
             "type": "string"
         }

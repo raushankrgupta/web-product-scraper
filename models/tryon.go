@@ -18,4 +18,5 @@ type TryOn struct {
 	GeneratedImageURL string             `bson:"generated_image_url" json:"generated_image_url"`       // Path to local file or URL
 	Status            string             `bson:"status" json:"status"`                                 // e.g. "completed", "failed"
 	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
+	IsDeleted         bool               `bson:"is_deleted" json:"is_deleted"` // Soft delete flag
 }

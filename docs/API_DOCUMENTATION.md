@@ -165,4 +165,8 @@ Manage user profiles ("persons").
       "current_page": 1,
       "total_pages": 10
   }
+
+### 2. Delete Generated Image
+- **Endpoint**: `DELETE /gallery/{id}`
+- **Response**: `204 No Content`
   ```

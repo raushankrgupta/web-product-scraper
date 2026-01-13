@@ -11,6 +11,7 @@ import (
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -25,16 +26,23 @@ type GalleryResponse struct {
 // GalleryHandler handles fetching the user's generated images
 // GalleryHandler handles fetching the user's generated images
 func GalleryHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		getGallery(w, r)
+	case http.MethodDelete:
+		deleteGalleryPhoto(w, r)
+	default:
+		utils.RespondError(w, nil, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// getGallery handles fetching the user's generated images
+func getGallery(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
 		fmt.Println(logMessageBuilder.String())
 	}()
-	utils.AddToLogMessage(&logMessageBuilder, "[Gallery API]")
-
-	if r.Method != http.MethodGet {
-		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	utils.AddToLogMessage(&logMessageBuilder, "[Get Gallery API]")
 
 	// 1. Get User ID from Context
 	userID, err := GetUserIDFromContext(r.Context())
@@ -66,7 +74,12 @@ func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Fetching gallery. Page: %d, Limit: %d", page, limit))
 	collection := utils.GetCollection("fitly", "tryons")
 
-	filter := bson.M{"user_id": userID, "status": "completed"}
+	// Filter now includes is_deleted check
+	filter := bson.M{
+		"user_id":    userID,
+		"status":     "completed",
+		"is_deleted": bson.M{"$ne": true},
+	}
 
 	// Count total documents for pagination
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -139,4 +152,60 @@ func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Found %d images", len(tryOns)))
 	utils.RespondJSON(w, http.StatusOK, response)
+}
+
+// deleteGalleryPhoto handles soft deleting a photo
+func deleteGalleryPhoto(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Delete Gallery Photo API]")
+
+	// 1. Get User ID
+	userID, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID in context", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. Get Photo ID from Path
+	// Expected path: /gallery/{id} -> ["", "gallery", "id"]
+	pathParts := strings.Split(r.URL.Path, "/")
+	if len(pathParts) < 3 || pathParts[2] == "" {
+		utils.RespondError(w, &logMessageBuilder, "Photo ID required", http.StatusBadRequest)
+		return
+	}
+	photoID, err := primitive.ObjectIDFromHex(pathParts[2])
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Invalid Photo ID", http.StatusBadRequest)
+		return
+	}
+
+	// 3. Perform Soft Delete
+	collection := utils.GetCollection("fitly", "tryons")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	filter := bson.M{
+		"_id":     photoID,
+		"user_id": userID,
+	}
+	update := bson.M{
+		"$set": bson.M{"is_deleted": true},
+	}
+
+	result, err := collection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Failed to delete photo", http.StatusInternalServerError)
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		utils.RespondError(w, &logMessageBuilder, "Photo not found or unauthorized", http.StatusNotFound)
+		return
+	}
+
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Soft deleted photo: %s", photoID.Hex()))
+	w.WriteHeader(http.StatusNoContent)
 }
