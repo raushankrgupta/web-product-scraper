@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    container_name: web-product-scraper
+    restart: always
+    ports:
+      - "80:8080"
+    env_file:
+      - .env
+    environment:
+      - PORT=8080
+      # These will be overridden by .env if present, but good to have defaults or explicit mappings
+      # AWS Credentials should definitely be in .env
