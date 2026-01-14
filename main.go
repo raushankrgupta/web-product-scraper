@@ -25,7 +25,7 @@ func main() {
 
 	// CORS Middleware
 	corsMiddleware := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return utils.LatencyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept")
@@ -34,7 +34,7 @@ func main() {
 				return
 			}
 			next.ServeHTTP(w, r)
-		})
+		}))
 	}
 
 	// Serve Static Files
@@ -61,7 +61,7 @@ func main() {
 
 	port := config.Port
 	fmt.Printf("Server starting on port %s...\n", port)
-	if err := http.ListenAndServe(":"+port, utils.LatencyMiddleware(http.DefaultServeMux)); err != nil {
+	if err := http.ListenAndServe(":"+port, http.DefaultServeMux); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
