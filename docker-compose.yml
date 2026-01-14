@@ -5,11 +5,28 @@ services:
     build: .
     container_name: web-product-scraper
     restart: always
-    ports:
-      - "80:8080"
+    # Ports are now handled by Caddy, so we don't expose 8080 directly to the host
+    # ports:
+    #   - "80:8080"
     env_file:
       - .env
     environment:
       - PORT=8080
-      # These will be overridden by .env if present, but good to have defaults or explicit mappings
-      # AWS Credentials should definitely be in .env
+
+  caddy:
+    image: caddy:latest
+    container_name: caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:

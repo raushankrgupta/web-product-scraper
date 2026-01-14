@@ -8,6 +8,17 @@ This guide walks you through deploying your Go application to an AWS EC2 instanc
 
 ---
 
+## Step 0: Configure DNS (Crucial for HTTPS)
+
+1.  Go to your Domain Registrar (Namecheap, GoDaddy, AWS Route53).
+2.  Find the **DNS Management** section for `tryonfusion.com`.
+3.  Create/Update these **A Records**:
+    *   **Host**: `@` (or `tryonfusion.com`) -> **Value**: `13.233.10.157`
+    *   **Host**: `www` -> **Value**: `13.233.10.157`
+4.  Wait a few minutes for propagation.
+
+---
+
 ## Step 1: Launch an EC2 Instance
 
 1.  Log in to the AWS Console and search for **EC2**.
@@ -111,9 +122,29 @@ docker compose up -d --build
 
 ---
 
+---
+
 ## Step 7: Access Your App
 
 Open your browser and visit:
-`http://YOUR_EC2_PUBLIC_IP`
+`https://tryonfusion.com`
 
-Your Go API is now live! 🚀
+
+**First Time Note**: It might take a few seconds for the green padlock to appear while Caddy negotiates the certificate.
+
+Your Go API is now live and secured with HTTPS! 🚀
+
+---
+
+## Step 8: Automating with GitHub Actions
+
+To enable auto-deployment whenever you push to GitHub:
+
+1.  **Go to your GitHub Repository** -> **Settings** -> **Secrets and variables** -> **Actions**.
+2.  Click **New repository secret**.
+3.  Add the following secrets:
+    *   `EC2_HOST`: Your Public IP (`13.233.10.157` or `tryonfusion.com`)
+    *   `EC2_USER`: `ubuntu`
+    *   `EC2_SSH_KEY`: Open your `.pem` key file, copy **everything** (including `-----BEGIN RSA PRIVATE KEY-----`), and paste it here.
+4.  Push a change to the `master` branch. You can watch the "Actions" tab in GitHub to see it deploy automatically!
+

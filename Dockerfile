@@ -30,7 +30,11 @@ FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Copy the binary from builder
+# Copy the binary from builder
 COPY --from=builder /app/web-product-scraper /web-product-scraper
+
+# Copy static files
+COPY --from=builder /app/static /static
 
 # Copy the .env file if you want it baked in (NOT RECOMMENDED for secrets)
 # OR rely on volume mounting / env vars at runtime.

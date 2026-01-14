@@ -1,0 +1,3 @@
+tryonfusion.com, www.tryonfusion.com {
+    reverse_proxy app:8080
+}

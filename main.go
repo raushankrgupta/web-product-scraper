@@ -37,6 +37,10 @@ func main() {
 		})
 	}
 
+	// Serve Static Files
+	fs := http.FileServer(http.Dir("./static"))
+	http.Handle("/", fs)
+
 	// Public Routes
 	http.Handle("/auth/signup", corsMiddleware(http.HandlerFunc(api.SignupHandler)))
 	http.Handle("/auth/verify-otp", corsMiddleware(http.HandlerFunc(api.VerifyOTPHandler)))

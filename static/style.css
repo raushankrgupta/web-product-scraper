@@ -1,0 +1,206 @@
+:root {
+    --primary-color: #00f3ff; /* Electric Blue */
+    --secondary-color: #bc13fe; /* Neon Purple */
+    --bg-color: #050505;
+    --text-color: #ffffff;
+    --glass-bg: rgba(255, 255, 255, 0.1);
+    --glass-border: 1px solid rgba(255, 255, 255, 0.2);
+    --font-heading: 'Outfit', sans-serif;
+    --font-body: 'Inter', sans-serif;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    font-family: var(--font-body);
+    overflow-x: hidden;
+    line-height: 1.6;
+}
+
+/* Background image overlay */
+.bg-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100vh;
+    background: url('hero_bg.png') no-repeat center center/cover;
+    opacity: 0.3;
+    z-index: -1;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+/* Header */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0;
+    backdrop-filter: blur(10px);
+}
+
+.logo-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.logo-container img {
+    height: 60px;
+    filter: drop-shadow(0 0 10px var(--primary-color));
+}
+
+.logo-text {
+    font-family: var(--font-heading);
+    font-size: 1.8rem;
+    font-weight: 700;
+    background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+/* Hero Section */
+.hero {
+    height: 80vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    position: relative;
+}
+
+.hero h1 {
+    font-family: var(--font-heading);
+    font-size: 4rem;
+    line-height: 1.1;
+    margin-bottom: 20px;
+    text-transform: uppercase;
+}
+
+.hero h1 span {
+    display: block;
+    background: linear-gradient(45deg, #fff, var(--primary-color));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.hero p.tagline {
+    font-size: 1.5rem;
+    margin-bottom: 40px;
+    color: rgba(255, 255, 255, 0.8);
+    max-width: 700px;
+}
+
+.cta-button {
+    padding: 15px 40px;
+    font-size: 1.2rem;
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--bg-color);
+    background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+    border-radius: 50px;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 0 20px rgba(0, 243, 255, 0.4);
+    transition: all 0.3s ease;
+}
+
+.cta-button:hover {
+    transform: translateY(-3px) scale(1.05);
+    box-shadow: 0 0 40px rgba(188, 19, 254, 0.6);
+}
+
+/* Features Section */
+.features {
+    padding: 50px 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 30px;
+}
+
+.feature-card {
+    background: var(--glass-bg);
+    border: var(--glass-border);
+    padding: 30px;
+    border-radius: 20px;
+    backdrop-filter: blur(10px);
+    transition: transform 0.3s ease;
+    text-align: center;
+}
+
+.feature-card:hover {
+    transform: translateY(-10px);
+    background: rgba(255, 255, 255, 0.15);
+    border-color: var(--primary-color);
+}
+
+.feature-icon {
+    font-size: 3rem;
+    margin-bottom: 20px;
+    color: var(--primary-color);
+}
+
+.feature-card h3 {
+    font-family: var(--font-heading);
+    font-size: 1.5rem;
+    margin-bottom: 15px;
+    color: #fff;
+}
+
+.feature-card p {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+/* Footer * /
+footer {
+    text-align: center;
+    padding: 40px 0;
+    background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 0.9rem;
+}
+
+/* Typing Animation Cursor */
+.cursor {
+    display: inline-block;
+    width: 3px;
+    height: 1em;
+    background-color: var(--primary-color);
+    margin-left: 5px;
+    animation: blink 1s infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
+@media (max-width: 768px) {
+    .hero h1 {
+        font-size: 2.5rem;
+    }
+    
+    .logo-container img {
+        height: 40px;
+    }
+    
+    .logo-text {
+        font-size: 1.2rem;
+    }
+}
