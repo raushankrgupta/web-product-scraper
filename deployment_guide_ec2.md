@@ -8,6 +8,19 @@ This guide walks you through deploying your Go application to an AWS EC2 instanc
 
 ---
 
+---
+
+## Step 0.5: Allocate Elastic IP (Fix Dynamic IP)
+
+AWS EC2 instances change their Public IP when stopped/restarted. To prevent this:
+1.  Go to **EC2 Console** -> **Network & Security** -> **Elastic IPs**.
+2.  Click **Allocate Elastic IP address** -> **Allocate**.
+3.  Select the new IP, click **Actions** -> **Associate Elastic IP address**.
+4.  Select your instance (**Go-App-Server**) and click **Associate**.
+5.  **Update your DNS** (Step 0) with this new Elastic IP. It will now persist forever.
+
+---
+
 ## Step 0: Configure DNS (Crucial for HTTPS)
 
 1.  Go to your Domain Registrar (Namecheap, GoDaddy, AWS Route53).
@@ -43,6 +56,29 @@ This guide walks you through deploying your Go application to an AWS EC2 instanc
     ```bash
     ssh -i "ec2-key.pem" ubuntu@YOUR_PUBLIC_IP
     ```
+
+---
+
+## Step 2.5: Setup Swap Space (Prevent Freezing)
+
+The `t2.micro` instance has only 1GB RAM. To prevent it from getting stuck during builds or heavy load, add swap memory.
+
+1.  Upload the swap script to your server (run this from your local machine):
+    ```bash
+    scp -i "ec2-key.pem" setup_swap.sh ubuntu@YOUR_ELASTIC_IP:/home/ubuntu/
+    ```
+    *(Or simply create the file on the server with `nano setup_swap.sh` and paste the content)*
+
+2.  Run the script on the server:
+    ```bash
+    chmod +x setup_swap.sh
+    ./setup_swap.sh
+    ```
+3.  Verify:
+    ```bash
+    free -h
+    ```
+    You should see `Swap:` with `2.0Gi` (or similar).
 
 ---
 
