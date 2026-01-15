@@ -91,7 +91,7 @@ Run the following commands inside your EC2 terminal:
 sudo apt-get update
 
 # Install Docker
-sudo apt-get install -y docker.io docker-compose-v2 git
+sudo apt-get install -y docker.io docker-compose-v2 docker-buildx git
 
 # Start Docker and enable it to run on boot
 sudo systemctl start docker
