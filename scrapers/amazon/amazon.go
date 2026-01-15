@@ -1,26 +1,24 @@
 package amazon
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/raushankrgupta/web-product-scraper/models"
+	"github.com/raushankrgupta/web-product-scraper/scrapers/base"
 )
 
 // AmazonScraper handles the HTML parsing for Amazon
 type AmazonScraper struct {
-	Client *http.Client
+	*base.BaseScraper
 }
 
 func NewAmazonScraper() *AmazonScraper {
 	return &AmazonScraper{
-		Client: &http.Client{},
+		BaseScraper: base.NewBaseScraper(),
 	}
 }
 
@@ -29,32 +27,9 @@ func (s *AmazonScraper) CanScrape(url string) bool {
 }
 
 func (s *AmazonScraper) ScrapeProduct(url string) (*models.Product, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// Important: User-Agent to avoid immediate blocking
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-
-	res, err := s.Client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != 200 {
-		return nil, fmt.Errorf("status code error: %d %s", res.StatusCode, res.Status)
-	}
-
-	// Save HTML for debugging variants
-	bodyBytes, _ := io.ReadAll(res.Body)
-	// os.WriteFile("debug.html", bodyBytes, 0644) // Optional: keep or remove based on preference
-	// Create a new reader since we consumed the body
-	res.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-	doc, err := goquery.NewDocumentFromReader(res.Body)
+	doc, err := s.FetchDocument(url, func(doc *goquery.Document) bool {
+		return strings.TrimSpace(doc.Find("#productTitle").Text()) != ""
+	})
 	if err != nil {
 		return nil, err
 	}
