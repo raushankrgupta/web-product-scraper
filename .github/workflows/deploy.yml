@@ -20,3 +20,4 @@ jobs:
             cd web-product-scraper
             git pull origin master
             docker compose up -d --build --remove-orphans
+            docker image prune -f

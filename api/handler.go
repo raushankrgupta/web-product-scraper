@@ -38,15 +38,18 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Scraping URL: %s", productURL))
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Scraping URL query: %s", productURL))
 
-	scraper, err := scrapers.GetScraper(productURL)
+	// GetScraper returns the scraper and the resolved URL (e.g. after following short links)
+	scraper, resolvedURL, err := scrapers.GetScraper(productURL)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error finding scraper: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	product, err := scraper.ScrapeProduct(productURL)
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Resolved URL: %s", resolvedURL))
+
+	product, err := scraper.ScrapeProduct(resolvedURL)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Scraping failed: %v", err), http.StatusInternalServerError)
 		return
