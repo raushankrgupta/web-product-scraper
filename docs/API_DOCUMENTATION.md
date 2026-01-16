@@ -169,4 +169,25 @@ Manage user profiles ("persons").
 ### 2. Delete Generated Image
 - **Endpoint**: `DELETE /gallery/{id}`
 - **Response**: `204 No Content`
+
+---
+
+## Feedback & Support (Protected)
+
+### 1. Submit Feedback
+- **Endpoint**: `POST /feedback`
+- **Type**: `multipart/form-data`
+- **Fields**:
+    - `name` (text, required)
+    - `email` (text, required)
+    - `message` (text, required)
+    - `country_code` (text, optional)
+    - `mobile_number` (text, optional)
+    - `contact_back` (boolean, optional, default: `false`)
+    - `files` (file, optional, multiple supported)
+- **Response**: `201 Created`
+  ```json
+  {
+      "message": "Feedback submitted successfully"
+  }
   ```

@@ -58,6 +58,7 @@ func main() {
 	http.Handle("/try-on", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.VirtualTryOnHandler))))
 	http.Handle("/gallery", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
 	http.Handle("/gallery/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
+	http.Handle("/feedback", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.FeedbackHandler))))
 
 	port := config.Port
 	fmt.Printf("Server starting on port %s...\n", port)

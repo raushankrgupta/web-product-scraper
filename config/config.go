@@ -16,6 +16,7 @@ var (
 	GeminiAPIKey       string
 	AWSRegion          string
 	AWSBucketName      string
+	DBName             string
 )
 
 // LoadConfig loads environment variables from .env file
@@ -50,5 +51,10 @@ func LoadConfig() {
 	AWSBucketName = os.Getenv("AWS_BUCKET_NAME")
 	if AWSBucketName == "" {
 		AWSBucketName = "tryonfusion"
+	}
+
+	DBName = os.Getenv("DB_NAME")
+	if DBName == "" {
+		DBName = "fitly"
 	}
 }
