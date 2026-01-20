@@ -84,7 +84,40 @@ Authorization: Bearer <your_token>
   }
   ```
 
+### 7. Delete Account (Protected)
+- **Endpoint**: `DELETE /auth/delete-account`
+- **Headers**: `Authorization: Bearer <token>`
+- **Response**: `200 OK`
+  ```json
+  {
+      "message": "Account deleted successfully. You have been logged out."
+  }
+  ```
+
 ---
+
+## Legal (Public)
+
+### 1. Get Privacy Policy
+- **Endpoint**: `GET /legal/privacy-policy`
+- **Response**: `200 OK`
+  ```json
+  {
+      "content": "# Privacy Policy\n..."
+  }
+  ```
+
+### 2. Get Terms of Service
+- **Endpoint**: `GET /legal/terms-of-service`
+- **Response**: `200 OK`
+  ```json
+  {
+      "content": "# Terms of Service\n..."
+  }
+  ```
+
+---
+
 
 ## Person Profiles (Protected)
 

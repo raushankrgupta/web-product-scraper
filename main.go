@@ -48,6 +48,11 @@ func main() {
 	http.Handle("/auth/forgot-password", corsMiddleware(http.HandlerFunc(api.ForgotPasswordHandler)))
 	http.Handle("/auth/reset-password", corsMiddleware(http.HandlerFunc(api.ResetPasswordHandler)))
 	http.Handle("/auth/change-password", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ChangePasswordHandler))))
+	http.Handle("/auth/delete-account", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.DeleteAccountHandler))))
+
+	// Legal Routes
+	http.Handle("/legal/privacy-policy", corsMiddleware(http.HandlerFunc(api.GetPrivacyPolicy)))
+	http.Handle("/legal/terms-of-service", corsMiddleware(http.HandlerFunc(api.GetTermsOfService)))
 
 	http.Handle("/product/details", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler))))
 

@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/raushankrgupta/web-product-scraper/utils"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type contextKey string
@@ -50,6 +53,20 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 		// Inject user_id into context
 		ctx := context.WithValue(r.Context(), UserIDKey, userID)
+
+		// Check user status in DB
+		collection := utils.GetCollection("fitly", "users")
+		ctxDb, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var user struct{ Status string }
+		objID, _ := primitive.ObjectIDFromHex(userID)
+		err = collection.FindOne(ctxDb, bson.M{"_id": objID}).Decode(&user)
+		if err != nil || user.Status == "deleted" {
+			http.Error(w, "Unauthorized: Account deleted or not found", http.StatusUnauthorized)
+			return
+		}
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

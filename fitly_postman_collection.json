@@ -195,6 +195,34 @@
                         }
                     },
                     "response": []
+                },
+                {
+                    "name": "Delete Account",
+                    "request": {
+                        "auth": {
+                            "type": "bearer",
+                            "bearer": [
+                                {
+                                    "key": "token",
+                                    "value": "{{token}}",
+                                    "type": "string"
+                                }
+                            ]
+                        },
+                        "method": "DELETE",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/auth/delete-account",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "auth",
+                                "delete-account"
+                            ]
+                        }
+                    },
+                    "response": []
                 }
             ]
         },
@@ -639,6 +667,47 @@
                             ],
                             "path": [
                                 "feedback"
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Legal",
+            "item": [
+                {
+                    "name": "Get Privacy Policy",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/legal/privacy-policy",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "legal",
+                                "privacy-policy"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Terms of Service",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/legal/terms-of-service",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "legal",
+                                "terms-of-service"
                             ]
                         }
                     },

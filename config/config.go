@@ -17,6 +17,7 @@ var (
 	AWSRegion          string
 	AWSBucketName      string
 	DBName             string
+	ContactEmail       string
 )
 
 // LoadConfig loads environment variables from .env file
@@ -56,5 +57,10 @@ func LoadConfig() {
 	DBName = os.Getenv("DB_NAME")
 	if DBName == "" {
 		DBName = "fitly"
+	}
+
+	ContactEmail = os.Getenv("CONTACT_EMAIL")
+	if ContactEmail == "" {
+		ContactEmail = "support@tryonfusion.com"
 	}
 }

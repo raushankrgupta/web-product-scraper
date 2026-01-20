@@ -84,8 +84,19 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	var existingUser models.User
 	err := collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&existingUser)
 	if err == nil {
-		utils.RespondError(w, &logMessageBuilder, "User with this email already exists", http.StatusConflict)
-		return
+		if existingUser.Status == "deleted" {
+			// User was deleted, rename old email to allow re-signup
+			newEmail := fmt.Sprintf("deleted_%d_%s", time.Now().Unix(), req.Email)
+			_, updateErr := collection.UpdateOne(ctx, bson.M{"_id": existingUser.ID}, bson.M{"$set": bson.M{"email": newEmail}})
+			if updateErr != nil {
+				utils.RespondError(w, &logMessageBuilder, "Failed to process previous account", http.StatusInternalServerError)
+				return
+			}
+			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Renamed deleted user email to %s", newEmail))
+		} else {
+			utils.RespondError(w, &logMessageBuilder, "User with this email already exists", http.StatusConflict)
+			return
+		}
 	} else if err != mongo.ErrNoDocuments {
 		utils.RespondError(w, &logMessageBuilder, "Database error checking user", http.StatusInternalServerError)
 		return
@@ -192,6 +203,11 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check status
+	if user.Status == "deleted" {
+		utils.RespondError(w, &logMessageBuilder, "Account deleted. Please sign up again to create a new account.", http.StatusForbidden)
+		return
+	}
+
 	if user.Status == "pending" {
 		utils.RespondError(w, &logMessageBuilder, "Please verify your email first", http.StatusForbidden)
 		return
@@ -516,5 +532,55 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	utils.AddToLogMessage(&logMessageBuilder, "Password changed successfully")
 	utils.RespondJSON(w, http.StatusOK, map[string]string{
 		"message": "Password changed successfully",
+	})
+}
+
+// DeleteAccountHandler handles soft deletion of user account
+func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Delete Account API]")
+
+	if r.Method != http.MethodDelete {
+		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get User ID from Context
+	userIdStr, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID", http.StatusUnauthorized)
+		return
+	}
+	userID, _ := primitive.ObjectIDFromHex(userIdStr)
+
+	collection := utils.GetCollection("fitly", "users")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Soft delete: update status to 'deleted' and set deleted_at
+	update := bson.M{
+		"$set": bson.M{
+			"status":     "deleted",
+			"deleted_at": time.Now(),
+		},
+	}
+
+	result, err := collection.UpdateOne(ctx, bson.M{"_id": userID}, update)
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Failed to delete account", http.StatusInternalServerError)
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		utils.RespondError(w, &logMessageBuilder, "User not found", http.StatusNotFound)
+		return
+	}
+
+	utils.AddToLogMessage(&logMessageBuilder, "Account deleted successfully")
+	utils.RespondJSON(w, http.StatusOK, map[string]string{
+		"message": "Account deleted successfully. You have been logged out.",
 	})
 }
