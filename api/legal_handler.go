@@ -56,8 +56,8 @@ Upon deletion, all your personal data and uploaded images are permanently remove
 ## 5. Contact Us
 If you have questions or comments about this policy, you may contact us at:
 - Email: %s
-- Phone: %s
-`, config.ContactEmail, config.ContactEmail, config.ContactPhone)
+- Email: %s
+`, config.ContactEmail, config.ContactEmail)
 
 	utils.RespondJSON(w, http.StatusOK, map[string]string{
 		"content": policy,
