@@ -10,7 +10,7 @@ import (
 	"github.com/tebeka/selenium/chrome"
 )
 
-const chromeDriverPath = "/usr/local/bin/chromedriver"
+const chromeDriverPath = "/usr/bin/chromedriver"
 
 // FetchDocumentSelenium fetches the URL using Selenium and returns the page content as a string
 func (b *BaseScraper) FetchDocumentSelenium(url string) (*goquery.Document, error) {

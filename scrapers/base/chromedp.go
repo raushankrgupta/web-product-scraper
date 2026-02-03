@@ -20,7 +20,11 @@ func (b *BaseScraper) FetchDocumentChromeDP(url string) (*goquery.Document, erro
 
 	// Set up browser options
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", "new"), // Use new headless mode
+		chromedp.Flag("headless", true), // Essential for Docker
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("user-data-dir", "/tmp/chrome-user-data"),
+		chromedp.ExecPath("/usr/bin/chromium"),
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"),
 	)
 

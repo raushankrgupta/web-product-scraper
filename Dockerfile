@@ -1,13 +1,22 @@
-# Start from a small, secure base image
-FROM golang:1.24-alpine AS builder
+# Start with Go base image (Debian-based)
+FROM golang:1.24
 
-# Install git and ca-certificates (needed for dependencies and HTTPS)
-# Added retries for apk to handle transient network issues
-RUN apk add --no-cache --update git ca-certificates || \
-    (sleep 5 && apk add --no-cache --update git ca-certificates) || \
-    (sleep 10 && apk add --no-cache --update git ca-certificates)
+# 1. Install Chromium and the Driver
+# This installs both the browser and the matching driver automatically.
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    chromium \
+    chromium-driver \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory inside the container
+# 2. (Optional) Create a Symlink if you don't want to change your Go code
+# apt installs specific versions, so we symlink to a known location if needed
+RUN ln -s /usr/bin/chromedriver /usr/local/bin/chromedriver
+
+# 3. Ensure /tmp/chrome-user-data exists (Crucial for chromedp)
+RUN mkdir -p /tmp/chrome-user-data && chmod 777 /tmp/chrome-user-data
+
+# Set working directory
 WORKDIR /app
 
 # Copy go.mod and go.sum files first to leverage Docker cache
@@ -20,29 +29,13 @@ RUN go mod download
 COPY . .
 
 # Build the application
-# CGO_ENABLED=0 creates a statically linked binary
-RUN CGO_ENABLED=0 GOOS=linux go build -o web-product-scraper .
-
-# Use a minimal scratch image for the final stage
-FROM scratch
-
-# Copy ca-certificates from builder
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-
-# Copy the binary from builder
-# Copy the binary from builder
-COPY --from=builder /app/web-product-scraper /web-product-scraper
-
-# Copy static files
-COPY --from=builder /app/static /static
-
-# Copy the .env file if you want it baked in (NOT RECOMMENDED for secrets)
-# OR rely on volume mounting / env vars at runtime.
-# The user asked to "dockrize my backedned", usually implies just the image.
-# We will NOT copy .env to the image to avoid leaking secrets.
+RUN go build -o web-product-scraper .
 
 # Expose the port
 EXPOSE 8080
 
+# Environment variable to help Chromedp find the binary
+ENV CHROME_BIN=/usr/bin/chromium
+
 # Command to run the executable
-ENTRYPOINT ["/web-product-scraper"]
+CMD ["./web-product-scraper"]

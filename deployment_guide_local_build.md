@@ -28,12 +28,12 @@ Enter your Docker Hub username and password.
     *   Replace `<your-dockerhub-username>` with your actual username.
     ```bash
     # Example: docker build -t johndoe/web-product-scraper:latest .
-    docker build -t <your-dockerhub-username>/web-product-scraper:latest .
+    docker build -t phikarnot/web-product-scraper:latest .
     ```
 
 2.  **Push** the image to Docker Hub:
     ```bash
-    docker push <your-dockerhub-username>/web-product-scraper:latest
+    docker push phikarnot/web-product-scraper:latest
     ```
     *This uploads the built image to the cloud.*
 
