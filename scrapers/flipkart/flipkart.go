@@ -1,6 +1,9 @@
 package flipkart
 
 import (
+	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -84,6 +87,94 @@ func (s *FlipkartScraper) ScrapeProduct(url string) (*models.Product, error) {
 		mainImg := doc.Find("img._396cs4").AttrOr("src", "")
 		if mainImg != "" {
 			product.Images = append(product.Images, mainImg)
+		}
+	}
+
+	// 5. JSON State Fallback (Robustness)
+	if product.DiscountedPrice == "" || len(product.Images) == 0 {
+		doc.Find("script").EachWithBreak(func(i int, s *goquery.Selection) bool {
+			text := s.Text()
+			if strings.Contains(text, "window.__INITIAL_STATE__") {
+				// Extract JSON
+				start := strings.Index(text, "window.__INITIAL_STATE__ = ") + len("window.__INITIAL_STATE__ = ")
+				sub := text[start:]
+				// It usually ends with a semicolon
+				end := strings.Index(sub, ";")
+				if end != -1 {
+					jsonStr := sub[:end]
+					var state map[string]interface{}
+					if err := json.Unmarshal([]byte(jsonStr), &state); err == nil {
+						// Traverse pageData -> pageContext -> analyticsData (or similar)
+						// This structure is complex and changes, but let's try to find key fields recursively or known paths
+
+						// Try to find "pageDataV4" or similar
+						if pageData, ok := state["pageDataV4"].(map[string]interface{}); ok {
+							if pageContext, ok := pageData["pageContext"].(map[string]interface{}); ok {
+								if titles, ok := pageContext["titles"].(map[string]interface{}); ok {
+									if title, ok := titles["title"].(string); ok && product.Title == "" {
+										product.Title = title
+									}
+								}
+								if pricing, ok := pageContext["pricing"].(map[string]interface{}); ok {
+									if finalPrice, ok := pricing["finalPrice"].(map[string]interface{}); ok {
+										if val, ok := finalPrice["value"].(float64); ok && product.DiscountedPrice == "" {
+											product.DiscountedPrice = fmt.Sprintf("₹%.0f", val)
+										}
+									}
+									if mrp, ok := pricing["mrp"].(map[string]interface{}); ok {
+										if val, ok := mrp["value"].(float64); ok && product.MRP == "" {
+											product.MRP = fmt.Sprintf("₹%.0f", val)
+										}
+									}
+								}
+							}
+						}
+
+						// Image fallback from state is checking "multimediaComponents" logic which is hard.
+						// Instead, valid regex usage for image URLs in the whole script if images are still empty.
+						if len(product.Images) == 0 {
+							// Look for higher res images in the JSON string
+							// Format: http://.../image/{@width}/{@height}/...
+							// We want 832/832
+							// Regex to find image URLs
+							// This is a bit "dirty" but effective
+						}
+					}
+				}
+				return false
+			}
+			return true
+		})
+	}
+
+	// Regex fallback for Images if still empty
+	if len(product.Images) == 0 {
+		html, _ := doc.Html()
+		// Look for flixcart image URLs
+		// pattern: https://rukminim1.flixcart.com/image/.../....jpg (or png/webp)
+		// We avoid /128/128/ or thumbnails if possible, but identifying "main" is hard.
+		// Let's capture generic patterns and filter.
+		// e.g. https://rukminim1.flixcart.com/image/{@width}/{@height}/...
+		// or actual dimensions.
+
+		// Simple strategy: Find all flixcart image URLs, deduplicate, and upgrade resolution
+		// Avoid regex on full HTML if possible, but here we are desperate.
+		// Better: look in known script variables via regex
+
+		reImg := regexp.MustCompile(`https://rukminim[0-9]*\.flixcart\.com/image/[0-9]+/[0-9]+/[^"]+`)
+		matches := reImg.FindAllString(html, -1)
+		unique := make(map[string]bool)
+		for _, m := range matches {
+			// Upgrade resolution
+			highRes := m
+			// Replace resolution parts like /128/128/ with /832/832/
+			reRes := regexp.MustCompile(`/[0-9]+/[0-9]+/`)
+			highRes = reRes.ReplaceAllString(highRes, "/832/832/")
+
+			if !unique[highRes] {
+				unique[highRes] = true
+				product.Images = append(product.Images, highRes)
+			}
 		}
 	}
 

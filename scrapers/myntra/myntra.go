@@ -68,9 +68,30 @@ func (s *MyntraScraper) ScrapeProduct(url string) (*models.Product, error) {
 				}
 
 				// Price
-				product.MRP = fmt.Sprintf("%v", pd["mrp"])
-				product.DiscountedPrice = fmt.Sprintf("%v", pd["price"])
-				// If price is int, formatted
+				extractPrice := func(val interface{}) string {
+					switch v := val.(type) {
+					case float64:
+						return fmt.Sprintf("%.0f", v)
+					case string:
+						return v
+					case map[string]interface{}:
+						// If it's a map, try to find 'discounted' or 'mrp' or 'price'
+						// Based on logs: map[discounted:10271 mrp:15802]
+						if d, ok := v["discounted"]; ok {
+							return fmt.Sprintf("%v", d)
+						}
+						if m, ok := v["mrp"]; ok {
+							return fmt.Sprintf("%v", m)
+						}
+						if p, ok := v["price"]; ok {
+							return fmt.Sprintf("%v", p)
+						}
+					}
+					return fmt.Sprintf("%v", val)
+				}
+
+				product.MRP = extractPrice(pd["mrp"])
+				product.DiscountedPrice = extractPrice(pd["price"])
 
 				// Ensure formatted with currency if just numbers
 				if !strings.Contains(product.DiscountedPrice, "Rs") && product.DiscountedPrice != "" {
@@ -130,6 +151,10 @@ func (s *MyntraScraper) ScrapeProduct(url string) (*models.Product, error) {
 				}
 			}
 		})
+	}
+
+	if product.Title == "" {
+		return nil, fmt.Errorf("failed to extract product details (title is empty)")
 	}
 
 	return product, nil

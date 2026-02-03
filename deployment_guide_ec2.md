@@ -54,7 +54,7 @@ AWS EC2 instances change their Public IP when stopped/restarted. To prevent this
 2.  Set permissions: `chmod 400 ec2-key.pem`
 3.  Connect via SSH (replace `YOUR_PUBLIC_IP` with the EC2 IP address from the console):
     ```bash
-    ssh -i "ec2-key.pem" ubuntu@YOUR_PUBLIC_IP
+    ssh -i tryonfusion-ec2-key.pem ubuntu@3.6.23.203
     ```
 
 ---
