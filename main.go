@@ -55,6 +55,7 @@ func main() {
 	http.Handle("/legal/terms-of-service", corsMiddleware(http.HandlerFunc(api.GetTermsOfService)))
 
 	http.Handle("/product/details", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler))))
+	http.Handle("/product/upload", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.UploadProductHandler))))
 
 	// Protected Routes (Require Token)
 	http.Handle("/persons", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))

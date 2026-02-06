@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"time"
 
@@ -18,13 +19,19 @@ func (b *BaseScraper) FetchDocumentChromeDP(url string) (*goquery.Document, erro
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
+	// Get Chrome path from env or default
+	chromePath := "/usr/bin/chromium"
+	if envPath := os.Getenv("CHROME_BIN"); envPath != "" {
+		chromePath = envPath
+	}
+
 	// Set up browser options
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true), // Essential for Docker
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("user-data-dir", "/tmp/chrome-user-data"),
-		chromedp.ExecPath("/usr/bin/chromium"),
+		chromedp.ExecPath(chromePath),
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"),
 	)
 

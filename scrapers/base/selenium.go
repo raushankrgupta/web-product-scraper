@@ -2,6 +2,7 @@ package base
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -26,8 +27,15 @@ func (b *BaseScraper) FetchDocumentSelenium(url string) (*goquery.Document, erro
 	// Start ChromeDriver
 	// Assuming chromedriver is in path
 	opts := []selenium.ServiceOption{}
+
+	// Get path from env or default
+	driverPath := os.Getenv("CHROMEDRIVER_PATH")
+	if driverPath == "" {
+		driverPath = chromeDriverPath // fallback to constant
+	}
+
 	// We can't easily start the service per request if we want speed, but for robustness we follow the pattern
-	service, err := selenium.NewChromeDriverService(chromeDriverPath, port, opts...)
+	service, err := selenium.NewChromeDriverService(driverPath, port, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("error starting Chrome driver service: %v", err)
 	}
