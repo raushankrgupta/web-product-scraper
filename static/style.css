@@ -1,6 +1,8 @@
 :root {
-    --primary-color: #00f3ff; /* Electric Blue */
-    --secondary-color: #bc13fe; /* Neon Purple */
+    --primary-color: #00f3ff;
+    /* Electric Blue */
+    --secondary-color: #bc13fe;
+    /* Neon Purple */
     --bg-color: #050505;
     --text-color: #ffffff;
     --glass-bg: rgba(255, 255, 255, 0.1);
@@ -107,23 +109,14 @@ header {
     max-width: 700px;
 }
 
-.cta-button {
-    padding: 15px 40px;
-    font-size: 1.2rem;
-    font-weight: 600;
-    text-decoration: none;
-    color: var(--bg-color);
-    background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
-    border-radius: 50px;
-    border: none;
-    cursor: pointer;
-    box-shadow: 0 0 20px rgba(0, 243, 255, 0.4);
-    transition: all 0.3s ease;
+.play-badge-link {
+    display: inline-block;
+    transition: transform 0.2s ease, filter 0.2s ease;
 }
 
-.cta-button:hover {
-    transform: translateY(-3px) scale(1.05);
-    box-shadow: 0 0 40px rgba(188, 19, 254, 0.6);
+.play-badge-link:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.1);
 }
 
 /* Features Section */
@@ -187,19 +180,26 @@ footer {
 }
 
 @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0;
+    }
 }
 
 @media (max-width: 768px) {
     .hero h1 {
         font-size: 2.5rem;
     }
-    
+
     .logo-container img {
         height: 40px;
     }
-    
+
     .logo-text {
         font-size: 1.2rem;
     }
