@@ -108,7 +108,7 @@ sudo usermod -aG docker $USER
 
 ```bash
 # Clone your repository (use HTTPS or setup SSH keys if private)
-git clone https://github.com/YOUR_USERNAME/web-product-scraper.git
+git clone https://github.com/raushankrgupta/web-product-scraper.git
 
 # Enter the directory
 cd web-product-scraper

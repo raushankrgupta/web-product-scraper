@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
 
 # 2. (Optional) Create a Symlink if you don't want to change your Go code
 # apt installs specific versions, so we symlink to a known location if needed
-RUN ln -s /usr/bin/chromedriver /usr/local/bin/chromedriver
+# RUN ln -s /usr/bin/chromedriver /usr/local/bin/chromedriver
 
 # 3. Ensure /tmp/chrome-user-data exists (Crucial for chromedp)
 RUN mkdir -p /tmp/chrome-user-data && chmod 777 /tmp/chrome-user-data
@@ -36,6 +36,7 @@ EXPOSE 8080
 
 # Environment variable to help Chromedp find the binary
 ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
 # Command to run the executable
 CMD ["./web-product-scraper"]
