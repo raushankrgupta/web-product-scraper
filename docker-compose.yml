@@ -1,6 +1,6 @@
 services:
   app:
-    build: .
+    image: phikarnot/web-product-scraper:latest
     container_name: web-product-scraper
     restart: always
     # Ports are now handled by Caddy, so we don't expose 8080 directly to the host
