@@ -66,6 +66,17 @@ func main() {
 	http.Handle("/gallery/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
 	http.Handle("/feedback", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.FeedbackHandler))))
 
+	// 3D Profile Routes
+	http.Handle("/api/3d-profile/jobs", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.CreateProfileJobHandler))))
+	http.Handle("/api/3d-profile/jobs/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GetJobStatusHandler))))
+	http.Handle("/api/users/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GetUserProfileHandler))))
+
+	// Start 3D Profile Worker
+	db := utils.GetCollection("fitly", "profile_jobs").Database()
+	jobChan := make(chan string, 100)
+	api.SetJobChan(jobChan)
+	go api.StartWorker(db, jobChan)
+
 	port := config.Port
 	fmt.Printf("Server starting on port %s...\n", port)
 	if err := http.ListenAndServe(":"+port, http.DefaultServeMux); err != nil {
