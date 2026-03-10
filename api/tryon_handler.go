@@ -170,3 +170,32 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	utils.RespondJSON(w, http.StatusOK, response)
 }
+
+// GetDailyThemesHandler returns daily try-on themes
+func GetDailyThemesHandler(w http.ResponseWriter, r *http.Request) {
+	themes := []map[string]interface{}{
+		{
+			"key":       "casual",
+			"label":     "Casual",
+			"image_url": "https://example.com/casual.jpg",
+			"products":  []string{"product_id_1", "product_id_2"},
+		},
+	}
+	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
+		"themes": themes,
+	})
+}
+
+// CoupleTryOnHandler handles couple try-on
+func CoupleTryOnHandler(w http.ResponseWriter, r *http.Request) {
+	utils.RespondJSON(w, http.StatusOK, map[string]string{
+		"message": "Coming Soon",
+	})
+}
+
+// GroupTryOnHandler handles group try-on
+func GroupTryOnHandler(w http.ResponseWriter, r *http.Request) {
+	utils.RespondJSON(w, http.StatusOK, map[string]string{
+		"message": "Coming Soon",
+	})
+}

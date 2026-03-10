@@ -41,6 +41,7 @@ type ForgotPasswordRequest struct {
 type VerifyOTPRequest struct {
 	Email string `json:"email"`
 	OTP   string `json:"otp"`
+	Mode  string `json:"mode,omitempty"`
 }
 
 // ResetPasswordRequest represents the payload for resetting password
@@ -308,7 +309,27 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user.Status = "verified"
+
 	utils.AddToLogMessage(&logMessageBuilder, "OTP verified successfully")
+
+	if req.Mode == "signup" {
+		// Generate JWT Token
+		token, err := utils.GenerateToken(user.ID.Hex())
+		if err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Failed to generate token", http.StatusInternalServerError)
+			return
+		}
+
+		user.Password = ""
+		utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
+			"message": "Email verified successfully",
+			"token":   token,
+			"user":    user,
+		})
+		return
+	}
+
 	utils.RespondJSON(w, http.StatusOK, map[string]string{
 		"message": "Email verification successful! You can now login.",
 	})
@@ -582,5 +603,149 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	utils.AddToLogMessage(&logMessageBuilder, "Account deleted successfully")
 	utils.RespondJSON(w, http.StatusOK, map[string]string{
 		"message": "Account deleted successfully. You have been logged out.",
+	})
+}
+
+// GoogleLoginRequest represents the payload for Google Login
+type GoogleLoginRequest struct {
+	GoogleToken string `json:"google_token"`
+}
+
+// GoogleUserInfo represents the user info from Google
+type GoogleUserInfo struct {
+	Sub           string `json:"sub"`
+	Name          string `json:"name"`
+	GivenName     string `json:"given_name"`
+	FamilyName    string `json:"family_name"`
+	Picture       string `json:"picture"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Locale        string `json:"locale"`
+}
+
+// GoogleLoginHandler handles Google OAuth login
+func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() {
+		fmt.Println(logMessageBuilder.String())
+	}()
+	utils.AddToLogMessage(&logMessageBuilder, "[Google Login API]")
+
+	if r.Method != http.MethodPost {
+		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req GoogleLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if req.GoogleToken == "" {
+		utils.RespondError(w, &logMessageBuilder, "Google token is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify Google Token via google userinfo api
+	// Works for access tokens
+	userInfoReq, err := http.NewRequest("GET", "https://www.googleapis.com/oauth2/v3/userinfo", nil)
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Failed to create request for Google API", http.StatusInternalServerError)
+		return
+	}
+	userInfoReq.Header.Set("Authorization", "Bearer "+req.GoogleToken)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(userInfoReq)
+	if err != nil || resp.StatusCode != http.StatusOK {
+
+		// Fallback: Check if it's an ID Token instead
+		idTokenResp, idErr := http.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + req.GoogleToken)
+		if idErr == nil && idTokenResp.StatusCode == http.StatusOK {
+			resp = idTokenResp
+		} else {
+			utils.RespondError(w, &logMessageBuilder, "Invalid Google token", http.StatusUnauthorized)
+			return
+		}
+	}
+	defer resp.Body.Close()
+
+	var googleUser GoogleUserInfo
+	if err := json.NewDecoder(resp.Body).Decode(&googleUser); err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Failed to decode Google user info", http.StatusInternalServerError)
+		return
+	}
+
+	if googleUser.Email == "" {
+		utils.RespondError(w, &logMessageBuilder, "Email not provided by Google", http.StatusBadRequest)
+		return
+	}
+
+	// Make sure name is populated
+	name := googleUser.Name
+	if name == "" {
+		name = strings.Split(googleUser.Email, "@")[0]
+	}
+
+	collection := utils.GetCollection("fitly", "users")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var user models.User
+	err = collection.FindOne(ctx, bson.M{"email": googleUser.Email}).Decode(&user)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			// Register new user
+			user = models.User{
+				Name:      name,
+				Email:     googleUser.Email,
+				Status:    "active", // Google users are implicitly verified
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+
+			res, insertErr := collection.InsertOne(ctx, user)
+			if insertErr != nil {
+				utils.RespondError(w, &logMessageBuilder, "Failed to register user", http.StatusInternalServerError)
+				return
+			}
+			user.ID = res.InsertedID.(primitive.ObjectID)
+			utils.AddToLogMessage(&logMessageBuilder, "New user registered via Google")
+		} else {
+			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Database error: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Existing user
+		if user.Status == "deleted" {
+			utils.RespondError(w, &logMessageBuilder, "Account deleted. Please sign up again to create a new account.", http.StatusForbidden)
+			return
+		}
+		// If they were pending, Google login verifies them
+		if user.Status == "pending" {
+			_, err := collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"status": "active"}})
+			if err != nil {
+				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to update status to active: %v", err))
+			} else {
+				user.Status = "active"
+			}
+		}
+	}
+
+	// Generate JWT Token
+	token, err := utils.GenerateToken(user.ID.Hex())
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	user.Password = "" // Hide password in response
+
+	utils.AddToLogMessage(&logMessageBuilder, "Google Login successful")
+	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "Login successful",
+		"token":   token,
+		"user":    user,
 	})
 }

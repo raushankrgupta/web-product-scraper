@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -26,6 +27,26 @@ type GalleryResponse struct {
 // GalleryHandler handles fetching the user's generated images
 // GalleryHandler handles fetching the user's generated images
 func GalleryHandler(w http.ResponseWriter, r *http.Request) {
+	// Check for POST sub-routes e.g., /gallery/:id/favorite
+	if r.Method == http.MethodPost {
+		pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		// expected: ["gallery", "{id}", "action"]
+		if len(pathParts) >= 3 {
+			action := pathParts[2]
+			switch action {
+			case "favorite":
+				toggleFavorite(w, r)
+				return
+			case "save":
+				markSaved(w, r)
+				return
+			case "feedback":
+				submitTryonFeedback(w, r)
+				return
+			}
+		}
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		getGallery(w, r)
@@ -51,9 +72,10 @@ func getGallery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Parse Pagination Parameters
+	// 2. Parse Pagination and Fillter Parameters
 	pageStr := r.URL.Query().Get("page")
 	limitStr := r.URL.Query().Get("limit")
+	filterParam := r.URL.Query().Get("filter")
 
 	page := 1
 	limit := 10
@@ -71,7 +93,7 @@ func getGallery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Query Database
-	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Fetching gallery. Page: %d, Limit: %d", page, limit))
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Fetching gallery. Page: %d, Limit: %d, Filter: %s", page, limit, filterParam))
 	collection := utils.GetCollection("fitly", "tryons")
 
 	// Filter now includes is_deleted check
@@ -79,6 +101,15 @@ func getGallery(w http.ResponseWriter, r *http.Request) {
 		"user_id":    userID,
 		"status":     "completed",
 		"is_deleted": bson.M{"$ne": true},
+	}
+
+	if filterParam == "saved" {
+		filter["is_saved"] = true
+	} else if filterParam == "favorites" {
+		filter["is_favorite"] = true
+	} else if filterParam == "recent" {
+		sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour)
+		filter["created_at"] = bson.M{"$gte": sevenDaysAgo}
 	}
 
 	// Count total documents for pagination
@@ -208,4 +239,131 @@ func deleteGalleryPhoto(w http.ResponseWriter, r *http.Request) {
 
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Soft deleted photo: %s", photoID.Hex()))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func toggleFavorite(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() { fmt.Println(logMessageBuilder.String()) }()
+
+	userID, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(pathParts) < 2 {
+		utils.RespondError(w, &logMessageBuilder, "Photo ID required", http.StatusBadRequest)
+		return
+	}
+	photoID, err := primitive.ObjectIDFromHex(pathParts[1])
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Invalid Photo ID", http.StatusBadRequest)
+		return
+	}
+
+	collection := utils.GetCollection("fitly", "tryons")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var tryon models.TryOn
+	err = collection.FindOne(ctx, bson.M{"_id": photoID, "user_id": userID}).Decode(&tryon)
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Photo not found", http.StatusNotFound)
+		return
+	}
+
+	newStatus := !tryon.IsFavorite
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": photoID}, bson.M{"$set": bson.M{"is_favorite": newStatus}})
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Failed to update favorite status", http.StatusInternalServerError)
+		return
+	}
+
+	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
+		"is_favorite": newStatus,
+	})
+}
+
+func markSaved(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() { fmt.Println(logMessageBuilder.String()) }()
+
+	userID, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(pathParts) < 2 {
+		utils.RespondError(w, &logMessageBuilder, "Photo ID required", http.StatusBadRequest)
+		return
+	}
+	photoID, err := primitive.ObjectIDFromHex(pathParts[1])
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Invalid Photo ID", http.StatusBadRequest)
+		return
+	}
+
+	collection := utils.GetCollection("fitly", "tryons")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": photoID, "user_id": userID}, bson.M{"$set": bson.M{"is_saved": true}})
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Failed to update saved status", http.StatusInternalServerError)
+		return
+	}
+
+	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
+		"is_saved": true,
+	})
+}
+
+type TryonFeedbackRequest struct {
+	Rating  int    `json:"rating"`
+	Comment string `json:"comment"`
+}
+
+func submitTryonFeedback(w http.ResponseWriter, r *http.Request) {
+	var logMessageBuilder strings.Builder
+	defer func() { fmt.Println(logMessageBuilder.String()) }()
+
+	userID, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(pathParts) < 2 {
+		utils.RespondError(w, &logMessageBuilder, "Photo ID required", http.StatusBadRequest)
+		return
+	}
+	photoID, err := primitive.ObjectIDFromHex(pathParts[1])
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Invalid Photo ID", http.StatusBadRequest)
+		return
+	}
+
+	var req TryonFeedbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	collection := utils.GetCollection("fitly", "tryons")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": photoID, "user_id": userID}, bson.M{"$set": bson.M{"rating": req.Rating, "comment": req.Comment}})
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Failed to submit feedback", http.StatusInternalServerError)
+		return
+	}
+
+	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "Feedback submitted successfully",
+	})
 }

@@ -19,4 +19,8 @@ type TryOn struct {
 	Status            string             `bson:"status" json:"status"`                                 // e.g. "completed", "failed"
 	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
 	IsDeleted         bool               `bson:"is_deleted" json:"is_deleted"` // Soft delete flag
+	IsFavorite        bool               `bson:"is_favorite" json:"is_favorite"`
+	IsSaved           bool               `bson:"is_saved" json:"is_saved"`
+	Rating            int                `bson:"rating,omitempty" json:"rating,omitempty"`
+	Comment           string             `bson:"comment,omitempty" json:"comment,omitempty"`
 }
