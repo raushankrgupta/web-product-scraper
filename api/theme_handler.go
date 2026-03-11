@@ -47,9 +47,9 @@ func GetThemesHandler(w http.ResponseWriter, r *http.Request) {
 				themes[i].ThemeImageURL = url
 			}
 		}
-		if themes[i].ImageURL != "" && !strings.HasPrefix(themes[i].ImageURL, "http") {
-			if url, err := utils.GetPresignedURL(r.Context(), themes[i].ImageURL); err == nil {
-				themes[i].ImageURL = url
+		if themes[i].ThemeBlankImageURL != "" && !strings.HasPrefix(themes[i].ThemeBlankImageURL, "http") {
+			if url, err := utils.GetPresignedURL(r.Context(), themes[i].ThemeBlankImageURL); err == nil {
+				themes[i].ThemeBlankImageURL = url
 			}
 		}
 	}

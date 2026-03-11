@@ -12,6 +12,7 @@ type TryOnPerson struct {
 	TopID       string `bson:"top_id,omitempty" json:"top_id,omitempty"`
 	BottomID    string `bson:"bottom_id,omitempty" json:"bottom_id,omitempty"`
 	AccessoryID string `bson:"accessory_id,omitempty" json:"accessory_id,omitempty"`
+	DressID     string `bson:"dress_id,omitempty" json:"dress_id,omitempty"`
 }
 
 // TryOn represents a virtual try-on session and result

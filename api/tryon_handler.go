@@ -176,6 +176,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		"result":        tryOnRecord.GeneratedImageURL,
 		"tryon_details": tryOnRecord,
 	}
+
 	utils.RespondJSON(w, http.StatusOK, response)
 }
 
@@ -215,14 +216,13 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// 1. Process Theme
-	var themeImageURL string
+
 	var themeReferenceURL string
 	var themeDescription string
-	var promptModifier string
 
 	if req.UseTheme && req.ThemeID != "" && req.ThemeID != "null" {
 		themeObjID, err := primitive.ObjectIDFromHex(req.ThemeID)
@@ -238,13 +238,9 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		}
 
 		themeDescription = theme.Description
-		promptModifier = theme.PromptModifier
 
-		if theme.ThemeImageURL != "" {
-			themeImageURL, _ = utils.GetPresignedURL(r.Context(), theme.ThemeImageURL)
-		}
-		if theme.ImageURL != "" {
-			themeReferenceURL, _ = utils.GetPresignedURL(r.Context(), theme.ImageURL)
+		if theme.ThemeBlankImageURL != "" {
+			themeReferenceURL, _ = utils.GetPresignedURL(r.Context(), theme.ThemeBlankImageURL)
 		}
 	}
 
@@ -270,35 +266,56 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 			personImgURL, _ = utils.GetPresignedURL(r.Context(), person.ImagePaths[0])
 		}
 
-		details := fmt.Sprintf("Gender: %s, Height: %.2f cm, Weight: %.2f kg", person.Gender, person.Height, person.Weight)
+		var detailsParts []string
+		if person.Gender != "" {
+			detailsParts = append(detailsParts, fmt.Sprintf("Gender: %s", person.Gender))
+		}
+		if person.Height > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Height: %.2f cm", person.Height))
+		}
+		if person.Weight > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Weight: %.2f kg", person.Weight))
+		}
+		if person.Chest > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Chest: %.2f cm", person.Chest))
+		}
+		if person.Waist > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Waist: %.2f cm", person.Waist))
+		}
+		if person.Hips > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Hips: %.2f cm", person.Hips))
+		}
+		details := strings.Join(detailsParts, ", ")
 
-		getProdImg := func(pid string) string {
+		getProdImg := func(pid string) []string {
 			if pid != "" && pid != "null" {
 				pObjID, err := primitive.ObjectIDFromHex(pid)
 				if err == nil {
 					var prod models.Product
 					if err := productCollection.FindOne(ctx, bson.M{"_id": pObjID}).Decode(&prod); err == nil && len(prod.Images) > 0 {
 						prod.Images = utils.PresignImageURLs(r.Context(), prod.Images)
-						return prod.Images[0]
+						return prod.Images
 					}
 				}
 			}
-			return ""
+			return []string{}
 		}
 
-		topURL := getProdImg(p.TopID)
-		bottomURL := getProdImg(p.BottomID)
-		accessoryURL := getProdImg(p.AccessoryID)
+		topURLs := getProdImg(p.TopID)
+		bottomURLs := getProdImg(p.BottomID)
+		accessoryURLs := getProdImg(p.AccessoryID)
+		dressURLs := getProdImg(p.DressID)
 
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Person %s: TopID=%v (URL_found:%v), BottomID=%v (URL_found:%v), AccessID=%v (URL_found:%v)", 
-			p.PersonID, p.TopID, topURL != "", p.BottomID, bottomURL != "", p.AccessoryID, accessoryURL != ""))
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Person %s: TopID=%v (URL_found:%v), BottomID=%v (URL_found:%v), AccessID=%v (URL_found:%v)",
+			p.PersonID, p.TopID, len(topURLs) != 0, p.BottomID, len(bottomURLs) != 0, p.AccessoryID, len(accessoryURLs) != 0))
 
 		peopleData = append(peopleData, utils.PersonTryOnData{
 			Details:        details,
 			PersonImageURL: personImgURL,
-			TopURL:         topURL,
-			BottomURL:      bottomURL,
-			AccessoryURL:   accessoryURL,
+			TopURL:         topURLs,
+			BottomURL:      bottomURLs,
+			AccessoryURL:   accessoryURLs,
+			DressURL:       dressURLs,
 		})
 	}
 
@@ -308,10 +325,19 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 	geminiCtx, cancelGemini := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancelGemini()
 
-	generatedContent, err := utils.GenerateMultiPersonTryOnImage(geminiCtx, tryOnType, themeImageURL, themeReferenceURL, themeDescription, promptModifier, peopleData)
-	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to generate multi-person try-on image: %v", err))
-		utils.RespondError(w, nil, "Failed to generate try-on image: "+err.Error(), http.StatusInternalServerError)
+	var generatedContent []byte
+	var genErr error
+
+	if tryOnType == "couple" && len(peopleData) == 2 {
+		generatedContent, genErr = utils.GenerateCoupleTryOnImage(geminiCtx, themeReferenceURL, themeDescription, peopleData)
+	} else if tryOnType == "individual" && len(peopleData) == 1 {
+		generatedContent, genErr = utils.GenerateIndividualTryOnImage(geminiCtx, themeReferenceURL, themeDescription, peopleData[0])
+	} else {
+		generatedContent, genErr = utils.GenerateMultiPersonTryOnImage(geminiCtx, tryOnType, themeReferenceURL, themeReferenceURL, themeDescription, peopleData)
+	}
+	if genErr != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to generate multi-person try-on image: %v", genErr))
+		utils.RespondError(w, nil, "Failed to generate try-on image: "+genErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -319,7 +345,7 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 	fileName := fmt.Sprintf("generated_tryon_%s_%d.jpg", tryOnType, time.Now().UnixNano())
 	objectKey := fmt.Sprintf("generated_images/%s", fileName)
 
-	_, err = utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	_, err := utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err), http.StatusInternalServerError)
 		return
@@ -352,5 +378,6 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		"result":        tryOnRecord.GeneratedImageURL,
 		"tryon_details": tryOnRecord,
 	}
+
 	utils.RespondJSON(w, http.StatusOK, response)
 }
