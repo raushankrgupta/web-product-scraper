@@ -138,7 +138,15 @@ func getWardrobe(w http.ResponseWriter, r *http.Request) {
 	// Presign product images if they are S3 keys
 	for i := range items {
 		for j, img := range items[i].Images {
-			if img != "" && !strings.HasPrefix(img, "http") {
+			if strings.Contains(img, "amazonaws.com/") {
+				parts := strings.SplitN(img, "amazonaws.com/", 2)
+				if len(parts) == 2 {
+					key := strings.SplitN(parts[1], "?", 2)[0]
+					if presigned, err := utils.GetPresignedURL(ctx, key); err == nil {
+						items[i].Images[j] = presigned
+					}
+				}
+			} else if img != "" && !strings.HasPrefix(img, "http") {
 				presigned, err := utils.GetPresignedURL(ctx, img)
 				if err == nil {
 					items[i].Images[j] = presigned

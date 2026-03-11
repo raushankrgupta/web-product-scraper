@@ -58,14 +58,16 @@ func main() {
 	http.Handle("/product/details", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler))))
 	http.Handle("/product/upload", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.UploadProductHandler))))
 
+	http.Handle("/themes", corsMiddleware(http.HandlerFunc(api.GetThemesHandler)))
+
 	// Protected Routes (Require Token)
 	http.Handle("/persons", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
 	http.Handle("/persons/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
 
 	http.Handle("/try-on", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.VirtualTryOnHandler))))
+	http.Handle("/try-on/individual", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.IndividualTryOnHandler))))
 	http.Handle("/try-on/couple", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.CoupleTryOnHandler))))
 	http.Handle("/try-on/group", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GroupTryOnHandler))))
-	http.Handle("/daily-tryon", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GetDailyThemesHandler))))
 	http.Handle("/gallery", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
 	http.Handle("/gallery/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
 	http.Handle("/feedback", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.FeedbackHandler))))

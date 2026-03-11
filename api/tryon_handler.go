@@ -21,6 +21,14 @@ type TryOnRequest struct {
 	PersonID  string `json:"person_id"`
 }
 
+// AdvancedTryOnRequest handles the unified payload mapping for all try-on variants
+type AdvancedTryOnRequest struct {
+	Type     string               `json:"type"` // "individual", "couple", "group"
+	UseTheme bool                 `json:"use_theme"`
+	ThemeID  string               `json:"theme_id"`
+	People   []models.TryOnPerson `json:"people"`
+}
+
 // VirtualTryOnHandler handles the virtual try-on request
 // VirtualTryOnHandler handles the virtual try-on request
 func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
@@ -171,31 +179,69 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	utils.RespondJSON(w, http.StatusOK, response)
 }
 
-// GetDailyThemesHandler returns daily try-on themes
-func GetDailyThemesHandler(w http.ResponseWriter, r *http.Request) {
-	themes := []map[string]interface{}{
-		{
-			"key":       "casual",
-			"label":     "Casual",
-			"image_url": "https://example.com/casual.jpg",
-			"products":  []string{"product_id_1", "product_id_2"},
-		},
-	}
-	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
-		"themes": themes,
-	})
+// IndividualTryOnHandler handles individual try-on using the unified optimized payload
+func IndividualTryOnHandler(w http.ResponseWriter, r *http.Request) {
+	processMultiPersonTryOn(w, r, 1, "individual")
 }
 
 // CoupleTryOnHandler handles couple try-on
 func CoupleTryOnHandler(w http.ResponseWriter, r *http.Request) {
-	utils.RespondJSON(w, http.StatusOK, map[string]string{
-		"message": "Coming Soon",
-	})
+	processMultiPersonTryOn(w, r, 2, "couple")
 }
 
 // GroupTryOnHandler handles group try-on
 func GroupTryOnHandler(w http.ResponseWriter, r *http.Request) {
-	utils.RespondJSON(w, http.StatusOK, map[string]string{
-		"message": "Coming Soon",
-	})
+	processMultiPersonTryOn(w, r, 0, "group") // 0 means dynamic count logic inside
+}
+
+func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeople int, tryOnType string) {
+	var logMessageBuilder strings.Builder
+	defer func() { fmt.Println(logMessageBuilder.String()) }()
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("[%s Try-On API]", strings.ToUpper(tryOnType)))
+
+	if r.Method != http.MethodPost {
+		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req AdvancedTryOnRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if requiredPeople > 0 && len(req.People) != requiredPeople {
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Expected %d people, got %d", requiredPeople, len(req.People)), http.StatusBadRequest)
+		return
+	}
+
+	// Capture UserID
+	userID, _ := GetUserIDFromContext(r.Context())
+
+	// TODO: Replace with actual Multi-Person Gemini Call
+	// Generating a mock result for now to satisfy the UI integration.
+	mockResultURL := "https://images.unsplash.com/photo-1511556532299-8f662fc26c06?auto=format&fit=crop&q=80&w=800"
+
+	tryOnRecord := models.TryOn{
+		ID:                primitive.NewObjectID(),
+		UserID:            userID,
+		Type:              tryOnType,
+		ThemeID:           req.ThemeID,
+		People:            req.People,
+		GeneratedImageURL: mockResultURL,
+		Status:            "mock_completed",
+		CreatedAt:         time.Now(),
+	}
+
+	tryOnCollection := utils.GetCollection("fitly", "tryons")
+	_, err := tryOnCollection.InsertOne(context.Background(), tryOnRecord)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save %s try-on record: %v", tryOnType, err))
+	}
+
+	response := map[string]interface{}{
+		"result":        mockResultURL,
+		"tryon_details": tryOnRecord,
+	}
+	utils.RespondJSON(w, http.StatusOK, response)
 }
