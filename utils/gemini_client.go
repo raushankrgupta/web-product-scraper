@@ -119,6 +119,24 @@ func fetchImage(pathOrURL string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+func fetchImageLogged(label, url string) ([]byte, string, error) {
+	data, err := fetchImage(url)
+	if err != nil {
+		fmt.Printf("[Gemini] FAILED to fetch %s image: %v (url prefix: %.80s...)\n", label, err, url)
+		return nil, "", err
+	}
+	mime := "jpeg"
+	if len(data) > 4 {
+		if data[0] == 0x89 && data[1] == 0x50 {
+			mime = "png"
+		} else if data[0] == 0x52 && data[1] == 0x49 {
+			mime = "webp"
+		}
+	}
+	fmt.Printf("[Gemini] Fetched %s image OK (%d bytes, %s)\n", label, len(data), mime)
+	return data, mime, nil
+}
+
 // PersonTryOnData holds the presigned URLs and details for a person in a try-on session
 type PersonTryOnData struct {
 	Details        string
@@ -143,134 +161,72 @@ func GenerateMultiPersonTryOnImage(ctx context.Context, tryOnType string, themeI
 
 	model := client.GenerativeModel("gemini-3-pro-image-preview")
 
+	imgCount := 0
 	var parts []genai.Part
 
-	// Build the strict text prompt
 	promptBuilder := strings.Builder{}
-	promptBuilder.WriteString(fmt.Sprintf("Generate a highly realistic %s virtual try-on image.\n\n", tryOnType))
-
-	if themeImageURL != "" {
-		promptBuilder.WriteString("A base canvas image is provided. This canvas MUST be used as the exact background environment for the final image. Do not modify or replace the background.\n\n")
-	}
+	promptBuilder.WriteString("I want the garment/clothing product images provided to be worn by each person.\n")
+	promptBuilder.WriteString(fmt.Sprintf("There are %d people. For each person I provide their photo followed by the garment images they must wear.\n", len(people)))
+	promptBuilder.WriteString("Remove all original clothing and dress each person ONLY in their provided garment images.\n")
+	promptBuilder.WriteString("The garments in the output must be an identical copy of the provided garment images — same color, design, pattern, fabric, texture.\n")
+	promptBuilder.WriteString("Do NOT invent or substitute any clothing.\n")
+	promptBuilder.WriteString("Show 100% truth, do not change the persons' faces or bodies.\n")
 	if themeDescription != "" {
-		// Use themeReferenceURL logic if it's there as inspiration, otherwise just description
-		promptBuilder.WriteString(fmt.Sprintf("Theme context: %s\n", themeDescription))
-		if themeReferenceURL != "" {
-			promptBuilder.WriteString("A theme reference image is also provided. Use this as inspiration for the pose and overall visual vibe.\n")
-		}
-		promptBuilder.WriteString("\n")
+		promptBuilder.WriteString(fmt.Sprintf("\nScene/Theme: %s\n", themeDescription))
 	}
-	promptBuilder.WriteString(fmt.Sprintf("There are %d people in the scene. Each person has:\n", len(people)))
-	promptBuilder.WriteString("• an input photo (face/body reference)\n")
-	promptBuilder.WriteString("• garments they must wear\n\n")
-	promptBuilder.WriteString("The final image must preserve the identity, facial features, body proportions, and skin tone from each person's input photo.\n\n")
-
-	for i, p := range people {
-		label := fmt.Sprintf("Person %d", i+1)
-
-		promptBuilder.WriteString("--------------------------------\n")
-		promptBuilder.WriteString(fmt.Sprintf("%s\n", label))
-		promptBuilder.WriteString("--------------------------------\n")
-
-		if p.Details != "" {
-			promptBuilder.WriteString(fmt.Sprintf("%s\n\n", p.Details))
-		}
-
-		promptBuilder.WriteString("Inputs provided:\n")
-		promptBuilder.WriteString(fmt.Sprintf("• %s actual photo\n", label))
-		if len(p.TopURL) > 0 {
-			promptBuilder.WriteString("• Top garment image\n")
-		}
-		if len(p.BottomURL) > 0 {
-			promptBuilder.WriteString("• Bottom garment image\n")
-		}
-		if len(p.AccessoryURL) > 0 {
-			promptBuilder.WriteString("• Accessory image\n")
-		}
-		if len(p.DressURL) > 0 {
-			promptBuilder.WriteString("• Dress image\n")
-		}
-
-		promptBuilder.WriteString("\nTask:\n")
-		promptBuilder.WriteString("Replace ALL clothing from the original photo with the provided garments.\n\n")
-
-		promptBuilder.WriteString("Requirements:\n")
-		promptBuilder.WriteString("• The person must wear the exact provided top, bottom, and accessory.\n")
-		promptBuilder.WriteString("• Garments must fit naturally to the body with realistic folds and fabric behavior.\n")
-		promptBuilder.WriteString("• Do NOT keep any clothing from the original photo.\n")
-		promptBuilder.WriteString("• Preserve the person's face, hairstyle, body shape, and pose.\n")
-		promptBuilder.WriteString("• Ensure garment alignment matches body perspective and pose.\n\n")
-	}
-
-	promptBuilder.WriteString("--------------------------------\n")
-	promptBuilder.WriteString("Scene Composition\n")
-	promptBuilder.WriteString("--------------------------------\n\n")
-	promptBuilder.WriteString("• Place all people naturally within the provided background canvas.\n")
-	promptBuilder.WriteString("• Ensure correct scale, perspective, and positioning relative to each other.\n")
-	promptBuilder.WriteString("• Match lighting, shadows, and color temperature to the background scene.\n")
-	promptBuilder.WriteString("• Ensure realistic interaction between the subjects and environment.\n")
-	promptBuilder.WriteString("• Maintain photorealistic quality.\n\n")
-	promptBuilder.WriteString(fmt.Sprintf("Final output must look like a real photograph of the %d people wearing the provided outfits in the given environment.\n", len(people)))
 
 	parts = append(parts, genai.Text(promptBuilder.String()))
 
-	// If theme images exist, fetch and add them
-	if themeImageURL != "" {
-		b, err := fetchImage(themeImageURL)
-		if err == nil {
-			parts = append(parts, genai.Text("Theme Canvas (Background Mapping):"))
-			parts = append(parts, genai.ImageData("jpeg", b))
-		}
-	}
-	if themeReferenceURL != "" {
-		b, err := fetchImage(themeReferenceURL)
-		if err == nil {
-			parts = append(parts, genai.Text("Theme Reference (Pose/Vibe Mapping):"))
-			parts = append(parts, genai.ImageData("jpeg", b))
-		}
-	}
-
 	for i, p := range people {
 		label := fmt.Sprintf("Person %d", i+1)
 
-		parts = append(parts, genai.Text(fmt.Sprintf("Images for %s:", label)))
+		if p.Details != "" {
+			parts = append(parts, genai.Text(fmt.Sprintf("%s (%s) — photo followed by their garments:", label, p.Details)))
+		} else {
+			parts = append(parts, genai.Text(fmt.Sprintf("%s — photo followed by their garments:", label)))
+		}
 
 		if p.PersonImageURL != "" {
-			b, err := fetchImage(p.PersonImageURL)
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s actual photo:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+			if b, mime, err := fetchImageLogged(label+"-photo", p.PersonImageURL); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
-		if len(p.TopURL) > 0 {
-			b, err := fetchImage(p.TopURL[0])
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s Top garment image:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+		for _, url := range p.TopURL {
+			if b, mime, err := fetchImageLogged(label+"-top", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
-		if len(p.BottomURL) > 0 {
-			b, err := fetchImage(p.BottomURL[0])
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s Bottom garment image:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+		for _, url := range p.BottomURL {
+			if b, mime, err := fetchImageLogged(label+"-bottom", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
-		if len(p.AccessoryURL) > 0 {
-			b, err := fetchImage(p.AccessoryURL[0])
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s Accessory image:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+		for _, url := range p.DressURL {
+			if b, mime, err := fetchImageLogged(label+"-dress", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
-		if len(p.DressURL) > 0 {
-			b, err := fetchImage(p.DressURL[0])
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s Dress image:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+		for _, url := range p.AccessoryURL {
+			if b, mime, err := fetchImageLogged(label+"-accessory", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
 	}
+
+	if themeImageURL != "" {
+		if b, mime, err := fetchImageLogged("theme-background", themeImageURL); err == nil {
+			parts = append(parts, genai.Text("Use this image as the background environment:"))
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+
+	fmt.Printf("[Gemini] %s try-on: sending %d images in %d parts to model\n", tryOnType, imgCount, len(parts))
 
 	resp, err := model.GenerateContent(ctx, parts...)
 	if err != nil {
@@ -284,12 +240,12 @@ func GenerateMultiPersonTryOnImage(ctx context.Context, tryOnType string, themeI
 	for _, part := range resp.Candidates[0].Content.Parts {
 		switch p := part.(type) {
 		case genai.Text:
+			fmt.Printf("[Gemini] Response type: TEXT (%d bytes)\n", len(p))
 			return []byte(p), nil
 		case genai.Blob:
+			fmt.Printf("[Gemini] Response type: IMAGE (%d bytes, %s)\n", len(p.Data), p.MIMEType)
 			return p.Data, nil
 		default:
-			errMsg := fmt.Sprintf("Received unexpected part type: %T", p)
-			fmt.Println(errMsg)
 			return []byte(fmt.Sprintf("%v", p)), nil
 		}
 	}
@@ -314,124 +270,72 @@ func GenerateCoupleTryOnImage(ctx context.Context, themeImageURL, themeDescripti
 
 	model := client.GenerativeModel("gemini-3-pro-image-preview")
 
+	imgCount := 0
 	var parts []genai.Part
 
-	// Build the strict user-requested text prompt
 	promptBuilder := strings.Builder{}
-	promptBuilder.WriteString("Generate a highly realistic couple virtual try-on image.\n\n")
-
-	if themeImageURL != "" {
-		promptBuilder.WriteString("A base canvas image is provided. This canvas MUST be used as the exact background environment for the final image. Do not modify or replace the background.\n\n")
-	}
+	promptBuilder.WriteString("I want the garment/clothing product images provided to be worn by each person.\n")
+	promptBuilder.WriteString("There are 2 people. For each person I provide their photo followed by the garment images they must wear.\n")
+	promptBuilder.WriteString("Remove all original clothing and dress each person ONLY in their provided garment images.\n")
+	promptBuilder.WriteString("The garments in the output must be an identical copy of the provided garment images — same color, design, pattern, fabric, texture.\n")
+	promptBuilder.WriteString("Do NOT invent or substitute any clothing.\n")
+	promptBuilder.WriteString("Show 100% truth, do not change the persons' faces or bodies.\n")
 	if themeDescription != "" {
-		promptBuilder.WriteString(fmt.Sprintf("Theme context: %s\n\n", themeDescription))
+		promptBuilder.WriteString(fmt.Sprintf("\nScene/Theme: %s\n", themeDescription))
 	}
-
-	promptBuilder.WriteString("There are two people in the scene. Each person has:\n")
-	promptBuilder.WriteString("• an input photo (face/body reference)\n")
-	promptBuilder.WriteString("• garments they must wear\n\n")
-	promptBuilder.WriteString("The final image must preserve the identity, facial features, body proportions, and skin tone from each person's input photo.\n\n")
-
-	for i, p := range people {
-		personLabels := []string{"Person 1", "Person 2"}
-		label := personLabels[i]
-
-		promptBuilder.WriteString("--------------------------------\n")
-		promptBuilder.WriteString(fmt.Sprintf("%s\n", label))
-		promptBuilder.WriteString("--------------------------------\n")
-
-		if p.Details != "" {
-			promptBuilder.WriteString(fmt.Sprintf("%s\n\n", p.Details))
-		}
-
-		promptBuilder.WriteString("Inputs provided:\n")
-		promptBuilder.WriteString(fmt.Sprintf("• %s actual photo\n", label))
-		if len(p.TopURL) > 0 {
-			promptBuilder.WriteString("• Top garment image\n")
-		}
-		if len(p.BottomURL) > 0 {
-			promptBuilder.WriteString("• Bottom garment image\n")
-		}
-		if len(p.AccessoryURL) > 0 {
-			promptBuilder.WriteString("• Accessory image\n")
-		}
-		if len(p.DressURL) > 0 {
-			promptBuilder.WriteString("• Dress image\n")
-		}
-
-		promptBuilder.WriteString("\nTask:\n")
-		promptBuilder.WriteString("Replace ALL clothing from the original photo with the provided garments.\n\n")
-
-		promptBuilder.WriteString("Requirements:\n")
-		promptBuilder.WriteString("• The person must wear the exact provided top, bottom, and accessory.\n")
-		promptBuilder.WriteString("• Garments must fit naturally to the body with realistic folds and fabric behavior.\n")
-		promptBuilder.WriteString("• Do NOT keep any clothing from the original photo.\n")
-		promptBuilder.WriteString("• Preserve the person's face, hairstyle, body shape, and pose.\n")
-		promptBuilder.WriteString("• Ensure garment alignment matches body perspective and pose.\n\n")
-	}
-
-	promptBuilder.WriteString("--------------------------------\n")
-	promptBuilder.WriteString("Scene Composition\n")
-	promptBuilder.WriteString("--------------------------------\n\n")
-	promptBuilder.WriteString("• Place both people naturally within the provided background canvas.\n")
-	promptBuilder.WriteString("• Ensure correct scale, perspective, and positioning relative to each other.\n")
-	promptBuilder.WriteString("• Match lighting, shadows, and color temperature to the background scene.\n")
-	promptBuilder.WriteString("• Ensure realistic interaction between the subjects and environment.\n")
-	promptBuilder.WriteString("• Maintain photorealistic quality.\n\n")
-	promptBuilder.WriteString("Final output must look like a real photograph of the couple wearing the provided outfits in the given environment.\n")
 
 	parts = append(parts, genai.Text(promptBuilder.String()))
 
-	if themeImageURL != "" {
-		b, err := fetchImage(themeImageURL)
-		if err == nil {
-			parts = append(parts, genai.Text("Base Canvas (Background Environment):"))
-			parts = append(parts, genai.ImageData("jpeg", b))
-		}
-	}
-
 	for i, p := range people {
-		personLabels := []string{"Person 1", "Person 2"}
-		label := personLabels[i]
+		label := fmt.Sprintf("Person %d", i+1)
 
-		parts = append(parts, genai.Text(fmt.Sprintf("Images for %s:", label)))
+		if p.Details != "" {
+			parts = append(parts, genai.Text(fmt.Sprintf("%s (%s) — photo followed by their garments:", label, p.Details)))
+		} else {
+			parts = append(parts, genai.Text(fmt.Sprintf("%s — photo followed by their garments:", label)))
+		}
 
 		if p.PersonImageURL != "" {
-			b, err := fetchImage(p.PersonImageURL)
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s actual photo:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+			if b, mime, err := fetchImageLogged(label+"-photo", p.PersonImageURL); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
-		if len(p.TopURL) > 0 {
-			b, err := fetchImage(p.TopURL[0])
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s Top garment image:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+		for _, url := range p.TopURL {
+			if b, mime, err := fetchImageLogged(label+"-top", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
-		if len(p.BottomURL) > 0 {
-			b, err := fetchImage(p.BottomURL[0])
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s Bottom garment image:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+		for _, url := range p.BottomURL {
+			if b, mime, err := fetchImageLogged(label+"-bottom", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
-		if len(p.AccessoryURL) > 0 {
-			b, err := fetchImage(p.AccessoryURL[0])
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s Accessory image:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+		for _, url := range p.DressURL {
+			if b, mime, err := fetchImageLogged(label+"-dress", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
-		if len(p.DressURL) > 0 {
-			b, err := fetchImage(p.DressURL[0])
-			if err == nil {
-				parts = append(parts, genai.Text(fmt.Sprintf("%s Dress image:", label)))
-				parts = append(parts, genai.ImageData("jpeg", b))
+		for _, url := range p.AccessoryURL {
+			if b, mime, err := fetchImageLogged(label+"-accessory", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
 			}
 		}
 	}
+
+	if themeImageURL != "" {
+		if b, mime, err := fetchImageLogged("theme-background", themeImageURL); err == nil {
+			parts = append(parts, genai.Text("Use this image as the background environment:"))
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+
+	fmt.Printf("[Gemini] Couple try-on: sending %d images in %d parts to model\n", imgCount, len(parts))
 
 	resp, err := model.GenerateContent(ctx, parts...)
 	if err != nil {
@@ -445,12 +349,12 @@ func GenerateCoupleTryOnImage(ctx context.Context, themeImageURL, themeDescripti
 	for _, part := range resp.Candidates[0].Content.Parts {
 		switch p := part.(type) {
 		case genai.Text:
+			fmt.Printf("[Gemini] Response type: TEXT (%d bytes)\n", len(p))
 			return []byte(p), nil
 		case genai.Blob:
+			fmt.Printf("[Gemini] Response type: IMAGE (%d bytes, %s)\n", len(p.Data), p.MIMEType)
 			return p.Data, nil
 		default:
-			errMsg := fmt.Sprintf("Received unexpected part type: %T", p)
-			fmt.Println(errMsg)
 			return []byte(fmt.Sprintf("%v", p)), nil
 		}
 	}
@@ -472,120 +376,68 @@ func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescr
 
 	model := client.GenerativeModel("gemini-3-pro-image-preview")
 
+	imgCount := 0
 	var parts []genai.Part
 
-	// Build the strict user-requested text prompt
 	promptBuilder := strings.Builder{}
-	promptBuilder.WriteString("Generate a highly realistic virtual try-on image of a single person.\n\n")
-
-	if themeImageURL != "" {
-		promptBuilder.WriteString("A base canvas image is provided. This canvas MUST be used as the exact background environment for the final image. Do not modify or replace the background.\n\n")
+	promptBuilder.WriteString("I want the garment/clothing product images provided to be worn by the person in the photo.\n")
+	promptBuilder.WriteString("Remove all original clothing from the person and dress them ONLY in the exact garment images provided.\n")
+	promptBuilder.WriteString("The garments in the output must be an identical copy of the provided garment images — same color, design, pattern, fabric, texture.\n")
+	promptBuilder.WriteString("Do NOT invent or substitute any clothing.\n")
+	promptBuilder.WriteString("Show 100% truth, do not change the person's face or body.\n")
+	if person.Details != "" {
+		promptBuilder.WriteString(fmt.Sprintf("\nPerson Details: %s\n", person.Details))
 	}
 	if themeDescription != "" {
-		promptBuilder.WriteString(fmt.Sprintf("Theme context: %s\n\n", themeDescription))
+		promptBuilder.WriteString(fmt.Sprintf("\nScene/Theme: %s\n", themeDescription))
 	}
-
-	promptBuilder.WriteString("The person has:\n")
-	promptBuilder.WriteString("• an input photo (face/body reference)\n")
-	promptBuilder.WriteString("• garments they must wear\n\n")
-	promptBuilder.WriteString("The final image must preserve the identity, facial features, body proportions, and skin tone from the input photo.\n\n")
-
-	promptBuilder.WriteString("--------------------------------\n")
-	promptBuilder.WriteString("Subject Profile\n")
-	promptBuilder.WriteString("--------------------------------\n")
-
-	if person.Details != "" {
-		promptBuilder.WriteString(fmt.Sprintf("%s\n\n", person.Details))
-	}
-
-	promptBuilder.WriteString("Inputs provided:\n")
-	promptBuilder.WriteString("• Actual photo\n")
-	if len(person.TopURL) != 0 {
-		promptBuilder.WriteString("• Top garment image\n")
-	}
-	if len(person.BottomURL) != 0 {
-		promptBuilder.WriteString("• Bottom garment image\n")
-	}
-	if len(person.AccessoryURL) != 0 {
-		promptBuilder.WriteString("• Accessory image\n")
-	}
-	if len(person.DressURL) != 0 {
-		promptBuilder.WriteString("• Dress image\n")
-	}
-
-	promptBuilder.WriteString("\nTask:\n")
-	promptBuilder.WriteString("Replace ALL clothing from the original photo with the provided garments.\n\n")
-
-	promptBuilder.WriteString("Requirements:\n")
-	promptBuilder.WriteString("• The person must wear the exact provided top, bottom, dress and accessory.\n")
-	promptBuilder.WriteString("• Garments must fit naturally to the body with realistic folds and fabric behavior.\n")
-	promptBuilder.WriteString("• Do NOT keep any clothing from the original photo.\n")
-	promptBuilder.WriteString("• Preserve the person's face, hairstyle, body shape, and pose.\n")
-	promptBuilder.WriteString("• Ensure garment alignment matches body perspective and pose.\n\n")
-
-	promptBuilder.WriteString("--------------------------------\n")
-	promptBuilder.WriteString("Scene Composition\n")
-	promptBuilder.WriteString("--------------------------------\n\n")
-	promptBuilder.WriteString("• Place the person naturally within the provided background canvas.\n")
-	promptBuilder.WriteString("• Match lighting, shadows, and color temperature to the background scene.\n")
-	promptBuilder.WriteString("• Ensure realistic interaction between the subject and environment.\n")
-	promptBuilder.WriteString("• Maintain photorealistic quality.\n\n")
-	promptBuilder.WriteString("Final output must look like a real photograph of the person wearing the provided outfit in the given environment.\n")
 
 	parts = append(parts, genai.Text(promptBuilder.String()))
 
-	if themeImageURL != "" {
-		b, err := fetchImage(themeImageURL)
-		if err == nil {
-			parts = append(parts, genai.Text("Base Canvas (Background Environment):"))
-			parts = append(parts, genai.ImageData("jpeg", b))
-		}
-	}
-
-	parts = append(parts, genai.Text("Images for Subject:"))
-
 	if person.PersonImageURL != "" {
-		b, err := fetchImage(person.PersonImageURL)
-		if err == nil {
-			parts = append(parts, genai.Text("Actual photo:"))
-			parts = append(parts, genai.ImageData("jpeg", b))
+		if b, mime, err := fetchImageLogged("person", person.PersonImageURL); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
 		}
 	}
-	if len(person.TopURL) != 0 {
-		for _, url := range person.TopURL {
-			b, err := fetchImage(url)
-			if err == nil {
-				parts = append(parts, genai.Text("Top garment image:"))
-				parts = append(parts, genai.ImageData("jpeg", b))
-			}
+
+	for _, url := range person.TopURL {
+		if b, mime, err := fetchImageLogged("top", url); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
 		}
 	}
-	if len(person.BottomURL) != 0 {
-		for _, url := range person.BottomURL {
-			b, err := fetchImage(url)
-			if err == nil {
-				parts = append(parts, genai.Text("Bottom garment image:"))
-				parts = append(parts, genai.ImageData("jpeg", b))
-			}
+	for _, url := range person.BottomURL {
+		if b, mime, err := fetchImageLogged("bottom", url); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
 		}
 	}
-	if len(person.AccessoryURL) != 0 {
-		for _, url := range person.AccessoryURL {
-			b, err := fetchImage(url)
-			if err == nil {
-				parts = append(parts, genai.Text("Accessory image:"))
-				parts = append(parts, genai.ImageData("jpeg", b))
-			}
+	for _, url := range person.DressURL {
+		if b, mime, err := fetchImageLogged("dress", url); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
 		}
 	}
-	if len(person.DressURL) != 0 {
-		for _, url := range person.DressURL {
-			b, err := fetchImage(url)
-			if err == nil {
-				parts = append(parts, genai.Text("Dress image:"))
-				parts = append(parts, genai.ImageData("jpeg", b))
-			}
+	for _, url := range person.AccessoryURL {
+		if b, mime, err := fetchImageLogged("accessory", url); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
 		}
+	}
+
+	if themeImageURL != "" {
+		if b, mime, err := fetchImageLogged("theme-background", themeImageURL); err == nil {
+			parts = append(parts, genai.Text("Use this image as the background environment:"))
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+
+	fmt.Printf("[Gemini] Individual try-on: sending %d images in %d parts to model\n", imgCount, len(parts))
+
+	if imgCount < 2 {
+		return nil, fmt.Errorf("not enough images fetched (got %d, need at least person + 1 garment)", imgCount)
 	}
 
 	resp, err := model.GenerateContent(ctx, parts...)
@@ -600,12 +452,12 @@ func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescr
 	for _, part := range resp.Candidates[0].Content.Parts {
 		switch p := part.(type) {
 		case genai.Text:
+			fmt.Printf("[Gemini] Response type: TEXT (%d bytes)\n", len(p))
 			return []byte(p), nil
 		case genai.Blob:
+			fmt.Printf("[Gemini] Response type: IMAGE (%d bytes, %s)\n", len(p.Data), p.MIMEType)
 			return p.Data, nil
 		default:
-			errMsg := fmt.Sprintf("Received unexpected part type: %T", p)
-			fmt.Println(errMsg)
 			return []byte(fmt.Sprintf("%v", p)), nil
 		}
 	}

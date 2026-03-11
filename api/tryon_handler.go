@@ -247,7 +247,7 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 	// 2. Process People
 	var peopleData []utils.PersonTryOnData
 	personCollection := utils.GetCollection("fitly", "person")
-	productCollection := utils.GetCollection("fitly", "products")
+	wardrobeCollection := utils.GetCollection("fitly", "wardrobe")
 
 	for _, p := range req.People {
 		personObjID, err := primitive.ObjectIDFromHex(p.PersonID)
@@ -287,27 +287,27 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		}
 		details := strings.Join(detailsParts, ", ")
 
-		getProdImg := func(pid string) []string {
-			if pid != "" && pid != "null" {
-				pObjID, err := primitive.ObjectIDFromHex(pid)
+		getWardrobeImages := func(itemID string) []string {
+			if itemID != "" && itemID != "null" {
+				objID, err := primitive.ObjectIDFromHex(itemID)
 				if err == nil {
-					var prod models.Product
-					if err := productCollection.FindOne(ctx, bson.M{"_id": pObjID}).Decode(&prod); err == nil && len(prod.Images) > 0 {
-						prod.Images = utils.PresignImageURLs(r.Context(), prod.Images)
-						return prod.Images
+					var item models.WardrobeItem
+					if err := wardrobeCollection.FindOne(ctx, bson.M{"_id": objID}).Decode(&item); err == nil && len(item.Images) > 0 {
+						item.Images = utils.PresignImageURLs(r.Context(), item.Images)
+						return item.Images
 					}
 				}
 			}
 			return []string{}
 		}
 
-		topURLs := getProdImg(p.TopID)
-		bottomURLs := getProdImg(p.BottomID)
-		accessoryURLs := getProdImg(p.AccessoryID)
-		dressURLs := getProdImg(p.DressID)
+		topURLs := getWardrobeImages(p.TopID)
+		bottomURLs := getWardrobeImages(p.BottomID)
+		accessoryURLs := getWardrobeImages(p.AccessoryID)
+		dressURLs := getWardrobeImages(p.DressID)
 
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Person %s: TopID=%v (URL_found:%v), BottomID=%v (URL_found:%v), AccessID=%v (URL_found:%v)",
-			p.PersonID, p.TopID, len(topURLs) != 0, p.BottomID, len(bottomURLs) != 0, p.AccessoryID, len(accessoryURLs) != 0))
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Person %s: TopID=%v (URL_found:%v), BottomID=%v (URL_found:%v), AccessID=%v (URL_found:%v), DressID=%v (URL_found:%v)",
+			p.PersonID, p.TopID, len(topURLs) != 0, p.BottomID, len(bottomURLs) != 0, p.AccessoryID, len(accessoryURLs) != 0, p.DressID, len(dressURLs) != 0))
 
 		peopleData = append(peopleData, utils.PersonTryOnData{
 			Details:        details,
