@@ -215,12 +215,118 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// 1. Process Theme
+	var themeImageURL string
+	var themeReferenceURL string
+	var themeDescription string
+	var promptModifier string
+
+	if req.UseTheme && req.ThemeID != "" && req.ThemeID != "null" {
+		themeObjID, err := primitive.ObjectIDFromHex(req.ThemeID)
+		if err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Invalid theme ID", http.StatusBadRequest)
+			return
+		}
+		themeCollection := utils.GetCollection("fitly", "themes")
+		var theme models.Theme
+		if err := themeCollection.FindOne(ctx, bson.M{"_id": themeObjID}).Decode(&theme); err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Theme not found", http.StatusNotFound)
+			return
+		}
+
+		themeDescription = theme.Description
+		promptModifier = theme.PromptModifier
+
+		if theme.ThemeImageURL != "" {
+			themeImageURL, _ = utils.GetPresignedURL(r.Context(), theme.ThemeImageURL)
+		}
+		if theme.ImageURL != "" {
+			themeReferenceURL, _ = utils.GetPresignedURL(r.Context(), theme.ImageURL)
+		}
+	}
+
+	// 2. Process People
+	var peopleData []utils.PersonTryOnData
+	personCollection := utils.GetCollection("fitly", "person")
+	productCollection := utils.GetCollection("fitly", "products")
+
+	for _, p := range req.People {
+		personObjID, err := primitive.ObjectIDFromHex(p.PersonID)
+		if err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Invalid person ID: "+p.PersonID, http.StatusBadRequest)
+			return
+		}
+		var person models.Person
+		if err := personCollection.FindOne(ctx, bson.M{"_id": personObjID}).Decode(&person); err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Person not found: "+p.PersonID, http.StatusNotFound)
+			return
+		}
+
+		personImgURL := ""
+		if len(person.ImagePaths) > 0 {
+			personImgURL, _ = utils.GetPresignedURL(r.Context(), person.ImagePaths[0])
+		}
+
+		details := fmt.Sprintf("Gender: %s, Height: %.2f cm, Weight: %.2f kg", person.Gender, person.Height, person.Weight)
+
+		getProdImg := func(pid string) string {
+			if pid != "" && pid != "null" {
+				pObjID, err := primitive.ObjectIDFromHex(pid)
+				if err == nil {
+					var prod models.Product
+					if err := productCollection.FindOne(ctx, bson.M{"_id": pObjID}).Decode(&prod); err == nil && len(prod.Images) > 0 {
+						prod.Images = utils.PresignImageURLs(r.Context(), prod.Images)
+						return prod.Images[0]
+					}
+				}
+			}
+			return ""
+		}
+
+		topURL := getProdImg(p.TopID)
+		bottomURL := getProdImg(p.BottomID)
+		accessoryURL := getProdImg(p.AccessoryID)
+
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Person %s: TopID=%v (URL_found:%v), BottomID=%v (URL_found:%v), AccessID=%v (URL_found:%v)", 
+			p.PersonID, p.TopID, topURL != "", p.BottomID, bottomURL != "", p.AccessoryID, accessoryURL != ""))
+
+		peopleData = append(peopleData, utils.PersonTryOnData{
+			Details:        details,
+			PersonImageURL: personImgURL,
+			TopURL:         topURL,
+			BottomURL:      bottomURL,
+			AccessoryURL:   accessoryURL,
+		})
+	}
+
+	// 3. Call Gemini API
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Calling Gemini for %s try-on with %d people", tryOnType, len(peopleData)))
+
+	geminiCtx, cancelGemini := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelGemini()
+
+	generatedContent, err := utils.GenerateMultiPersonTryOnImage(geminiCtx, tryOnType, themeImageURL, themeReferenceURL, themeDescription, promptModifier, peopleData)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to generate multi-person try-on image: %v", err))
+		utils.RespondError(w, nil, "Failed to generate try-on image: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 4. Save Try-On Record
+	fileName := fmt.Sprintf("generated_tryon_%s_%d.jpg", tryOnType, time.Now().UnixNano())
+	objectKey := fmt.Sprintf("generated_images/%s", fileName)
+
+	_, err = utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	// Capture UserID
 	userID, _ := GetUserIDFromContext(r.Context())
-
-	// TODO: Replace with actual Multi-Person Gemini Call
-	// Generating a mock result for now to satisfy the UI integration.
-	mockResultURL := "https://images.unsplash.com/photo-1511556532299-8f662fc26c06?auto=format&fit=crop&q=80&w=800"
 
 	tryOnRecord := models.TryOn{
 		ID:                primitive.NewObjectID(),
@@ -228,19 +334,22 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		Type:              tryOnType,
 		ThemeID:           req.ThemeID,
 		People:            req.People,
-		GeneratedImageURL: mockResultURL,
-		Status:            "mock_completed",
+		GeneratedImageURL: objectKey, // Store S3 Key
+		Status:            "completed",
 		CreatedAt:         time.Now(),
 	}
 
 	tryOnCollection := utils.GetCollection("fitly", "tryons")
-	_, err := tryOnCollection.InsertOne(context.Background(), tryOnRecord)
+	_, err = tryOnCollection.InsertOne(context.Background(), tryOnRecord)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save %s try-on record: %v", tryOnType, err))
 	}
 
+	presignedGeneratedURL, _ := utils.GetPresignedURL(r.Context(), objectKey)
+	tryOnRecord.GeneratedImageURL = presignedGeneratedURL
+
 	response := map[string]interface{}{
-		"result":        mockResultURL,
+		"result":        tryOnRecord.GeneratedImageURL,
 		"tryon_details": tryOnRecord,
 	}
 	utils.RespondJSON(w, http.StatusOK, response)
