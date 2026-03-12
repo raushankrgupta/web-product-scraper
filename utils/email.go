@@ -16,7 +16,7 @@ func SendEmail(toName, toEmail, subject, textContent, htmlContent string) error 
 		return fmt.Errorf("SENDGRID_API_KEY is not set in environment variables")
 	}
 
-	from := mail.NewEmail("Fitly App", "no-reply@tryonfusion.com") // Replace with a verified sender if you have one, or use a dummy for now check logs
+	from := mail.NewEmail("TryOnFusion App", "no-reply@tryonfusion.com") // Replace with a verified sender if you have one, or use a dummy for now check logs
 	to := mail.NewEmail(toName, toEmail)
 	message := mail.NewSingleEmail(from, subject, to, textContent, htmlContent)
 	client := sendgrid.NewSendClient(apiKey)
