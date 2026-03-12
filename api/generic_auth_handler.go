@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
@@ -52,7 +53,6 @@ type ResetPasswordRequest struct {
 }
 
 // SignupHandler handles user registration
-// SignupHandler handles user registration
 func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
@@ -77,7 +77,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "users")
+	collection := utils.GetCollection(config.DBName, "users")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -149,6 +149,8 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newUser.ID = res.InsertedID.(primitive.ObjectID)
+	newUser.Password = ""
+	newUser.OTP = ""
 
 	utils.RespondJSON(w, http.StatusCreated, map[string]interface{}{
 		"message": "User registered successfully. Please verify your email using the OTP sent.",
@@ -156,7 +158,6 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// LoginHandler handles user login
 // LoginHandler handles user login
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -181,7 +182,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "users")
+	collection := utils.GetCollection(config.DBName, "users")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -232,6 +233,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user.Password = ""
 	utils.AddToLogMessage(&logMessageBuilder, "Login successful")
 	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
 		"message": "Login successful",
@@ -240,7 +242,6 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// VerifyOTPHandler handles OTP verification
 // VerifyOTPHandler handles OTP verification
 func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -265,7 +266,7 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "users")
+	collection := utils.GetCollection(config.DBName, "users")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -336,7 +337,6 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ForgotPasswordHandler handles forgot password requests
-// ForgotPasswordHandler handles forgot password requests
 func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
@@ -360,14 +360,18 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "users")
+	collection := utils.GetCollection(config.DBName, "users")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var user models.User
 	err := collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&user)
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, "User not found", http.StatusNotFound)
+		// Return generic message to prevent account enumeration
+		utils.AddToLogMessage(&logMessageBuilder, "User not found, returning generic response")
+		utils.RespondJSON(w, http.StatusOK, map[string]string{
+			"message": "If an account with that email exists, an OTP has been sent.",
+		})
 		return
 	}
 
@@ -385,7 +389,7 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, "Failed to update user", http.StatusInternalServerError)
+		utils.RespondError(w, &logMessageBuilder, "Failed to process request", http.StatusInternalServerError)
 		return
 	}
 
@@ -401,11 +405,10 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 	utils.AddToLogMessage(&logMessageBuilder, "OTP for password reset sent")
 	utils.RespondJSON(w, http.StatusOK, map[string]string{
-		"message": "OTP sent to your email.",
+		"message": "If an account with that email exists, an OTP has been sent.",
 	})
 }
 
-// ResetPasswordHandler handles password reset with OTP
 // ResetPasswordHandler handles password reset with OTP
 func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -430,7 +433,7 @@ func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "users")
+	collection := utils.GetCollection(config.DBName, "users")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -477,7 +480,6 @@ type ChangePasswordRequest struct {
 }
 
 // ChangePasswordHandler handles password change for logged-in users
-// ChangePasswordHandler handles password change for logged-in users
 func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
@@ -515,7 +517,7 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "users")
+	collection := utils.GetCollection(config.DBName, "users")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -577,7 +579,7 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, _ := primitive.ObjectIDFromHex(userIdStr)
 
-	collection := utils.GetCollection("fitly", "users")
+	collection := utils.GetCollection(config.DBName, "users")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -694,7 +696,7 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 		name = strings.Split(googleUser.Email, "@")[0]
 	}
 
-	collection := utils.GetCollection("fitly", "users")
+	collection := utils.GetCollection(config.DBName, "users")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

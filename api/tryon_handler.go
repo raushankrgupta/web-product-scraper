@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
@@ -29,7 +30,6 @@ type AdvancedTryOnRequest struct {
 	People   []models.TryOnPerson `json:"people"`
 }
 
-// VirtualTryOnHandler handles the virtual try-on request
 // VirtualTryOnHandler handles the virtual try-on request
 func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -55,21 +55,28 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userIdStr, userErr := GetUserIDFromContext(r.Context())
+	if userErr != nil {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID", http.StatusUnauthorized)
+		return
+	}
+
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Try-On Request: PersonID=%s, ProductID=%s", req.PersonID, req.ProductID))
 
-	// 1. Fetch Person Data
+	// 1. Fetch Person Data (with ownership check)
 	personObjID, err := primitive.ObjectIDFromHex(req.PersonID)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Invalid person ID", http.StatusBadRequest)
 		return
 	}
+	userObjID, _ := primitive.ObjectIDFromHex(userIdStr)
 
-	personCollection := utils.GetCollection("fitly", "person")
+	personCollection := utils.GetCollection(config.DBName, "person")
 	var person models.Person
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err = personCollection.FindOne(ctx, bson.M{"_id": personObjID}).Decode(&person)
+	err = personCollection.FindOne(ctx, bson.M{"_id": personObjID, "user_id": userObjID}).Decode(&person)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Person not found", http.StatusNotFound)
 		return
@@ -90,7 +97,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	productCollection := utils.GetCollection("fitly", "products")
+	productCollection := utils.GetCollection(config.DBName, "products")
 	err = productCollection.FindOne(ctx, bson.M{"_id": productObjID}).Decode(&product)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Product not found", http.StatusNotFound)
@@ -160,7 +167,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:         time.Now(),
 	}
 
-	tryOnCollection := utils.GetCollection("fitly", "tryons")
+	tryOnCollection := utils.GetCollection(config.DBName, "tryons")
 	_, err = tryOnCollection.InsertOne(context.Background(), tryOnRecord)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save try-on record: %v", err))
@@ -230,7 +237,7 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 			utils.RespondError(w, &logMessageBuilder, "Invalid theme ID", http.StatusBadRequest)
 			return
 		}
-		themeCollection := utils.GetCollection("fitly", "themes")
+		themeCollection := utils.GetCollection(config.DBName, "themes")
 		var theme models.Theme
 		if err := themeCollection.FindOne(ctx, bson.M{"_id": themeObjID}).Decode(&theme); err != nil {
 			utils.RespondError(w, &logMessageBuilder, "Theme not found", http.StatusNotFound)
@@ -246,8 +253,8 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 
 	// 2. Process People
 	var peopleData []utils.PersonTryOnData
-	personCollection := utils.GetCollection("fitly", "person")
-	wardrobeCollection := utils.GetCollection("fitly", "wardrobe")
+	personCollection := utils.GetCollection(config.DBName, "person")
+	wardrobeCollection := utils.GetCollection(config.DBName, "wardrobe")
 
 	for _, p := range req.People {
 		personObjID, err := primitive.ObjectIDFromHex(p.PersonID)
@@ -365,7 +372,7 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		CreatedAt:         time.Now(),
 	}
 
-	tryOnCollection := utils.GetCollection("fitly", "tryons")
+	tryOnCollection := utils.GetCollection(config.DBName, "tryons")
 	_, err = tryOnCollection.InsertOne(context.Background(), tryOnRecord)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save %s try-on record: %v", tryOnType, err))

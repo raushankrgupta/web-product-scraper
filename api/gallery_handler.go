@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
@@ -24,7 +25,6 @@ type GalleryResponse struct {
 	TotalPages  int            `json:"total_pages"`
 }
 
-// GalleryHandler handles fetching the user's generated images
 // GalleryHandler handles fetching the user's generated images
 func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 	// Check for POST sub-routes e.g., /gallery/:id/favorite
@@ -94,7 +94,7 @@ func getGallery(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Query Database
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Fetching gallery. Page: %d, Limit: %d, Filter: %s", page, limit, filterParam))
-	collection := utils.GetCollection("fitly", "tryons")
+	collection := utils.GetCollection(config.DBName, "tryons")
 
 	// Filter now includes is_deleted check
 	filter := bson.M{
@@ -214,7 +214,7 @@ func deleteGalleryPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Perform Soft Delete
-	collection := utils.GetCollection("fitly", "tryons")
+	collection := utils.GetCollection(config.DBName, "tryons")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -262,7 +262,7 @@ func toggleFavorite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "tryons")
+	collection := utils.GetCollection(config.DBName, "tryons")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -306,7 +306,7 @@ func markSaved(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "tryons")
+	collection := utils.GetCollection(config.DBName, "tryons")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -353,7 +353,7 @@ func submitTryonFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "tryons")
+	collection := utils.GetCollection(config.DBName, "tryons")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

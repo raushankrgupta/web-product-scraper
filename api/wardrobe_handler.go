@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
@@ -100,7 +101,7 @@ func getWardrobe(w http.ResponseWriter, r *http.Request) {
 		limit = l
 	}
 
-	collection := utils.GetCollection("fitly", "wardrobe")
+	collection := utils.GetCollection(config.DBName, "wardrobe")
 
 	filter := bson.M{"user_id": userID}
 	if categoryFilter != "" && categoryFilter != "All" {
@@ -199,7 +200,7 @@ func saveProduct(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wardrobeCollection := utils.GetCollection("fitly", "wardrobe")
+	wardrobeCollection := utils.GetCollection(config.DBName, "wardrobe")
 
 	wardrobeItem := models.WardrobeItem{
 		ID:         primitive.NewObjectID(),
@@ -244,7 +245,7 @@ func removeProduct(w http.ResponseWriter, r *http.Request, itemIDHex string) {
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "wardrobe")
+	collection := utils.GetCollection(config.DBName, "wardrobe")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -289,7 +290,7 @@ func updateProductCategory(w http.ResponseWriter, r *http.Request, itemIDHex str
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "wardrobe")
+	collection := utils.GetCollection(config.DBName, "wardrobe")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -331,7 +332,7 @@ func toggleWardrobeFavorite(w http.ResponseWriter, r *http.Request, itemIDHex st
 		return
 	}
 
-	collection := utils.GetCollection("fitly", "wardrobe")
+	collection := utils.GetCollection(config.DBName, "wardrobe")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

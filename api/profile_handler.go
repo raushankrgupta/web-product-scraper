@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
@@ -15,7 +16,6 @@ import (
 )
 
 const (
-	DatabaseName   = "fitly"
 	CollectionName = "person"
 	UploadDir      = "user_images"
 )
@@ -90,14 +90,13 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			defer file.Close()
 
 			filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
 			objectKey := fmt.Sprintf("person_images/%s", filename)
 
 			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"))
+			file.Close()
 			if err != nil {
-				// Log error but continue with other files?
 				fmt.Printf("Failed to upload %s: %v\n", filename, err)
 				continue
 			}
@@ -121,7 +120,7 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:  time.Now(),
 	}
 
-	collection := utils.GetCollection(DatabaseName, CollectionName)
+	collection := utils.GetCollection(config.DBName, CollectionName)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -158,7 +157,7 @@ func getPersons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection(DatabaseName, CollectionName)
+	collection := utils.GetCollection(config.DBName, CollectionName)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -190,7 +189,7 @@ func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID 
 		return
 	}
 
-	collection := utils.GetCollection(DatabaseName, CollectionName)
+	collection := utils.GetCollection(config.DBName, CollectionName)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -233,7 +232,7 @@ func deletePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection(DatabaseName, CollectionName)
+	collection := utils.GetCollection(config.DBName, CollectionName)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -285,7 +284,7 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := utils.GetCollection(DatabaseName, CollectionName)
+	collection := utils.GetCollection(config.DBName, CollectionName)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -356,19 +355,18 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			defer file.Close()
 
 			filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
 			objectKey := fmt.Sprintf("person_images/%s", filename)
 
 			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"))
+			file.Close()
 			if err != nil {
 				fmt.Printf("Failed to upload %s: %v\n", filename, err)
 				continue
 			}
 			imagePaths = append(imagePaths, objectKey)
 		}
-		// If upload successful, replace existing images
 		if len(imagePaths) > 0 {
 			updateFields["image_paths"] = imagePaths
 			person.ImagePaths = imagePaths

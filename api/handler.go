@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/scrapers"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// ScrapeHandler handles the scraping request
 // ScrapeHandler handles the scraping request
 func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -121,7 +121,7 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	product.URL = productURL
 	product.CreatedAt = time.Now()
 
-	collection := utils.GetCollection("fitly", "products")
+	collection := utils.GetCollection(config.DBName, "products")
 	ctx := r.Context()
 	_, err = collection.InsertOne(ctx, product)
 	if err != nil {

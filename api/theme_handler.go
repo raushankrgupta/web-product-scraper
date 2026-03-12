@@ -6,9 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // GetThemesHandler fetches active themes from the database for the Daily Try-On carousel
@@ -18,7 +20,7 @@ func GetThemesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	themeCollection := utils.GetCollection("fitly", "themes")
+	themeCollection := utils.GetCollection(config.DBName, "themes")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -36,7 +38,7 @@ func GetThemesHandler(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, nil, "Failed to decode themes", http.StatusInternalServerError)
 			return
 		}
-	} else if err.Error() != "mongo: no documents in result" {
+	} else if err != mongo.ErrNoDocuments {
 		utils.RespondError(w, nil, "Failed to fetch themes", http.StatusInternalServerError)
 		return
 	}
