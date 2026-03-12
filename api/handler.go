@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/config"
+	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/scrapers"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -40,9 +41,31 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Scraping URL query: %s", productURL))
 
+	userID, _ := GetUserIDFromContext(r.Context())
+	collection := utils.GetCollection(config.DBName, "products")
+
+	saveFailedScrape := func(resolvedURL, scrapeErr string) {
+		failedProduct := models.Product{
+			ID:          primitive.NewObjectID(),
+			UserID:      userID,
+			URL:         productURL,
+			ResolvedURL: resolvedURL,
+			Status:      "failed",
+			ScrapeError: scrapeErr,
+			Source:      "link",
+			CreatedAt:   time.Now(),
+		}
+		if _, dbErr := collection.InsertOne(r.Context(), failedProduct); dbErr != nil {
+			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save failed scrape record: %v", dbErr))
+		} else {
+			utils.AddToLogMessage(&logMessageBuilder, "Failed scrape record saved to MongoDB for debugging")
+		}
+	}
+
 	// GetScraper returns the scraper and the resolved URL (e.g. after following short links)
 	scraper, resolvedURL, err := scrapers.GetScraper(productURL)
 	if err != nil {
+		saveFailedScrape("", fmt.Sprintf("scraper_not_found: %v", err))
 		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error finding scraper: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -51,6 +74,7 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 	product, err := scraper.ScrapeProduct(resolvedURL)
 	if err != nil {
+		saveFailedScrape(resolvedURL, fmt.Sprintf("scrape_failed: %v", err))
 		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Scraping failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -82,17 +106,14 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	urlToKey, err := utils.UploadImagesToS3(r.Context(), dedupedImages, folderName)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Error uploading images: %v", err))
-		// We continue even if some uploads fail, relying on what succeeded or original URLs
 	}
 
-	// Update product with S3 keys (stored in database)
-	// We map the scraped image URLs to the S3 keys we just got.
 	var localMainKeys []string
 	for _, img := range product.Images {
 		if key, ok := urlToKey[img]; ok {
 			localMainKeys = append(localMainKeys, key)
 		} else {
-			localMainKeys = append(localMainKeys, img) // Fallback
+			localMainKeys = append(localMainKeys, img)
 		}
 	}
 	product.Images = localMainKeys
@@ -109,21 +130,15 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		product.Variants[i].Images = localVarKeys
 	}
 
-	// Capture UserID
-	userID, err := GetUserIDFromContext(r.Context())
-	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, "Warning: UserID not found in context")
-	}
-
 	// Save to MongoDB
 	product.ID = primitive.NewObjectID()
 	product.UserID = userID
 	product.URL = productURL
+	product.ResolvedURL = resolvedURL
+	product.Status = "success"
 	product.CreatedAt = time.Now()
 
-	collection := utils.GetCollection(config.DBName, "products")
-	ctx := r.Context()
-	_, err = collection.InsertOne(ctx, product)
+	_, err = collection.InsertOne(r.Context(), product)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save product to MongoDB: %v", err))
 	} else {
