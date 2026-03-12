@@ -613,14 +613,14 @@ type GoogleLoginRequest struct {
 
 // GoogleUserInfo represents the user info from Google
 type GoogleUserInfo struct {
-	Sub           string `json:"sub"`
-	Name          string `json:"name"`
-	GivenName     string `json:"given_name"`
-	FamilyName    string `json:"family_name"`
-	Picture       string `json:"picture"`
-	Email         string `json:"email"`
-	EmailVerified bool   `json:"email_verified"`
-	Locale        string `json:"locale"`
+	Sub           string      `json:"sub"`
+	Name          string      `json:"name"`
+	GivenName     string      `json:"given_name"`
+	FamilyName    string      `json:"family_name"`
+	Picture       string      `json:"picture"`
+	Email         string      `json:"email"`
+	EmailVerified interface{} `json:"email_verified"`
+	Locale        string      `json:"locale"`
 }
 
 // GoogleLoginHandler handles Google OAuth login
@@ -659,12 +659,18 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(userInfoReq)
 	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
 
 		// Fallback: Check if it's an ID Token instead
 		idTokenResp, idErr := http.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + req.GoogleToken)
 		if idErr == nil && idTokenResp.StatusCode == http.StatusOK {
 			resp = idTokenResp
 		} else {
+			if idTokenResp != nil {
+				idTokenResp.Body.Close()
+			}
 			utils.RespondError(w, &logMessageBuilder, "Invalid Google token", http.StatusUnauthorized)
 			return
 		}
