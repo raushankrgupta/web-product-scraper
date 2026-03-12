@@ -20,6 +20,9 @@ type Product struct {
 	UserID           string             `bson:"user_id" json:"user_id"`
 	Source           string             `bson:"source" json:"source"`       // "link" or "user_upload"
 	URL              string             `bson:"url" json:"url"`             // Original product URL (optional if user_upload)
+	ResolvedURL      string             `bson:"resolved_url,omitempty" json:"resolved_url,omitempty"`
+	Status           string             `bson:"status" json:"status"`                         // "success", "failed"
+	ScrapeError      string             `bson:"scrape_error,omitempty" json:"scrape_error,omitempty"` // Error details when scraping fails
 	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`
 	Title            string             `json:"title" bson:"title"`
 	MRP              string             `json:"mrp"`              // Maximum Retail Price (List Price)

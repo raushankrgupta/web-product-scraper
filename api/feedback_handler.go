@@ -71,12 +71,12 @@ func FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error opening file %s", file.Filename), http.StatusInternalServerError)
 			return
 		}
-		defer f.Close()
 
 		ext := filepath.Ext(file.Filename)
 		objectKey := fmt.Sprintf("feedback/%s/%s%s", userIDStr, uuid.New().String(), ext)
 
 		path, err := utils.UploadFileToS3(context.TODO(), f, objectKey, file.Header.Get("Content-Type"))
+		f.Close()
 		if err != nil {
 			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error uploading file %s", file.Filename), http.StatusInternalServerError)
 			return

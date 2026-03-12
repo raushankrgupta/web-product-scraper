@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson"
@@ -21,7 +22,14 @@ type TryOnRequest struct {
 	PersonID  string `json:"person_id"`
 }
 
-// VirtualTryOnHandler handles the virtual try-on request
+// AdvancedTryOnRequest handles the unified payload mapping for all try-on variants
+type AdvancedTryOnRequest struct {
+	Type     string               `json:"type"` // "individual", "couple", "group"
+	UseTheme bool                 `json:"use_theme"`
+	ThemeID  string               `json:"theme_id"`
+	People   []models.TryOnPerson `json:"people"`
+}
+
 // VirtualTryOnHandler handles the virtual try-on request
 func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -47,21 +55,28 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userIdStr, userErr := GetUserIDFromContext(r.Context())
+	if userErr != nil {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID", http.StatusUnauthorized)
+		return
+	}
+
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Try-On Request: PersonID=%s, ProductID=%s", req.PersonID, req.ProductID))
 
-	// 1. Fetch Person Data
+	// 1. Fetch Person Data (with ownership check)
 	personObjID, err := primitive.ObjectIDFromHex(req.PersonID)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Invalid person ID", http.StatusBadRequest)
 		return
 	}
+	userObjID, _ := primitive.ObjectIDFromHex(userIdStr)
 
-	personCollection := utils.GetCollection("fitly", "person")
+	personCollection := utils.GetCollection(config.DBName, "person")
 	var person models.Person
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err = personCollection.FindOne(ctx, bson.M{"_id": personObjID}).Decode(&person)
+	err = personCollection.FindOne(ctx, bson.M{"_id": personObjID, "user_id": userObjID}).Decode(&person)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Person not found", http.StatusNotFound)
 		return
@@ -82,7 +97,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	productCollection := utils.GetCollection("fitly", "products")
+	productCollection := utils.GetCollection(config.DBName, "products")
 	err = productCollection.FindOne(ctx, bson.M{"_id": productObjID}).Decode(&product)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Product not found", http.StatusNotFound)
@@ -152,7 +167,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:         time.Now(),
 	}
 
-	tryOnCollection := utils.GetCollection("fitly", "tryons")
+	tryOnCollection := utils.GetCollection(config.DBName, "tryons")
 	_, err = tryOnCollection.InsertOne(context.Background(), tryOnRecord)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save try-on record: %v", err))
@@ -168,5 +183,208 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		"result":        tryOnRecord.GeneratedImageURL,
 		"tryon_details": tryOnRecord,
 	}
+
+	utils.RespondJSON(w, http.StatusOK, response)
+}
+
+// IndividualTryOnHandler handles individual try-on using the unified optimized payload
+func IndividualTryOnHandler(w http.ResponseWriter, r *http.Request) {
+	processMultiPersonTryOn(w, r, 1, "individual")
+}
+
+// CoupleTryOnHandler handles couple try-on
+func CoupleTryOnHandler(w http.ResponseWriter, r *http.Request) {
+	processMultiPersonTryOn(w, r, 2, "couple")
+}
+
+// GroupTryOnHandler handles group try-on
+func GroupTryOnHandler(w http.ResponseWriter, r *http.Request) {
+	processMultiPersonTryOn(w, r, 0, "group") // 0 means dynamic count logic inside
+}
+
+func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeople int, tryOnType string) {
+	var logMessageBuilder strings.Builder
+	defer func() { fmt.Println(logMessageBuilder.String()) }()
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("[%s Try-On API]", strings.ToUpper(tryOnType)))
+
+	if r.Method != http.MethodPost {
+		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req AdvancedTryOnRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if requiredPeople > 0 && len(req.People) != requiredPeople {
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Expected %d people, got %d", requiredPeople, len(req.People)), http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// 1. Process Theme
+
+	var themeReferenceURL string
+	var themeDescription string
+
+	if req.UseTheme && req.ThemeID != "" && req.ThemeID != "null" {
+		themeObjID, err := primitive.ObjectIDFromHex(req.ThemeID)
+		if err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Invalid theme ID", http.StatusBadRequest)
+			return
+		}
+		themeCollection := utils.GetCollection(config.DBName, "themes")
+		var theme models.Theme
+		if err := themeCollection.FindOne(ctx, bson.M{"_id": themeObjID}).Decode(&theme); err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Theme not found", http.StatusNotFound)
+			return
+		}
+
+		themeDescription = theme.Description
+
+		if theme.ThemeBlankImageURL != "" {
+			themeReferenceURL, _ = utils.GetPresignedURL(r.Context(), theme.ThemeBlankImageURL)
+		}
+	}
+
+	// 2. Process People
+	var peopleData []utils.PersonTryOnData
+	personCollection := utils.GetCollection(config.DBName, "person")
+	wardrobeCollection := utils.GetCollection(config.DBName, "wardrobe")
+
+	for _, p := range req.People {
+		personObjID, err := primitive.ObjectIDFromHex(p.PersonID)
+		if err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Invalid person ID: "+p.PersonID, http.StatusBadRequest)
+			return
+		}
+		var person models.Person
+		if err := personCollection.FindOne(ctx, bson.M{"_id": personObjID}).Decode(&person); err != nil {
+			utils.RespondError(w, &logMessageBuilder, "Person not found: "+p.PersonID, http.StatusNotFound)
+			return
+		}
+
+		personImgURL := ""
+		if len(person.ImagePaths) > 0 {
+			personImgURL, _ = utils.GetPresignedURL(r.Context(), person.ImagePaths[0])
+		}
+
+		var detailsParts []string
+		if person.Gender != "" {
+			detailsParts = append(detailsParts, fmt.Sprintf("Gender: %s", person.Gender))
+		}
+		if person.Height > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Height: %.2f cm", person.Height))
+		}
+		if person.Weight > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Weight: %.2f kg", person.Weight))
+		}
+		if person.Chest > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Chest: %.2f cm", person.Chest))
+		}
+		if person.Waist > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Waist: %.2f cm", person.Waist))
+		}
+		if person.Hips > 0 {
+			detailsParts = append(detailsParts, fmt.Sprintf("Hips: %.2f cm", person.Hips))
+		}
+		details := strings.Join(detailsParts, ", ")
+
+		getWardrobeImages := func(itemID string) []string {
+			if itemID != "" && itemID != "null" {
+				objID, err := primitive.ObjectIDFromHex(itemID)
+				if err == nil {
+					var item models.WardrobeItem
+					if err := wardrobeCollection.FindOne(ctx, bson.M{"_id": objID}).Decode(&item); err == nil && len(item.Images) > 0 {
+						item.Images = utils.PresignImageURLs(r.Context(), item.Images)
+						return item.Images
+					}
+				}
+			}
+			return []string{}
+		}
+
+		topURLs := getWardrobeImages(p.TopID)
+		bottomURLs := getWardrobeImages(p.BottomID)
+		accessoryURLs := getWardrobeImages(p.AccessoryID)
+		dressURLs := getWardrobeImages(p.DressID)
+
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Person %s: TopID=%v (URL_found:%v), BottomID=%v (URL_found:%v), AccessID=%v (URL_found:%v), DressID=%v (URL_found:%v)",
+			p.PersonID, p.TopID, len(topURLs) != 0, p.BottomID, len(bottomURLs) != 0, p.AccessoryID, len(accessoryURLs) != 0, p.DressID, len(dressURLs) != 0))
+
+		peopleData = append(peopleData, utils.PersonTryOnData{
+			Details:        details,
+			PersonImageURL: personImgURL,
+			TopURL:         topURLs,
+			BottomURL:      bottomURLs,
+			AccessoryURL:   accessoryURLs,
+			DressURL:       dressURLs,
+		})
+	}
+
+	// 3. Call Gemini API
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Calling Gemini for %s try-on with %d people", tryOnType, len(peopleData)))
+
+	geminiCtx, cancelGemini := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelGemini()
+
+	var generatedContent []byte
+	var genErr error
+
+	if tryOnType == "couple" && len(peopleData) == 2 {
+		generatedContent, genErr = utils.GenerateCoupleTryOnImage(geminiCtx, themeReferenceURL, themeDescription, peopleData)
+	} else if tryOnType == "individual" && len(peopleData) == 1 {
+		generatedContent, genErr = utils.GenerateIndividualTryOnImage(geminiCtx, themeReferenceURL, themeDescription, peopleData[0])
+	} else {
+		generatedContent, genErr = utils.GenerateMultiPersonTryOnImage(geminiCtx, tryOnType, themeReferenceURL, themeReferenceURL, themeDescription, peopleData)
+	}
+	if genErr != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to generate multi-person try-on image: %v", genErr))
+		utils.RespondError(w, nil, "Failed to generate try-on image: "+genErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 4. Save Try-On Record
+	fileName := fmt.Sprintf("generated_tryon_%s_%d.jpg", tryOnType, time.Now().UnixNano())
+	objectKey := fmt.Sprintf("generated_images/%s", fileName)
+
+	_, err := utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Capture UserID
+	userID, _ := GetUserIDFromContext(r.Context())
+
+	tryOnRecord := models.TryOn{
+		ID:                primitive.NewObjectID(),
+		UserID:            userID,
+		Type:              tryOnType,
+		ThemeID:           req.ThemeID,
+		People:            req.People,
+		GeneratedImageURL: objectKey, // Store S3 Key
+		Status:            "completed",
+		CreatedAt:         time.Now(),
+	}
+
+	tryOnCollection := utils.GetCollection(config.DBName, "tryons")
+	_, err = tryOnCollection.InsertOne(context.Background(), tryOnRecord)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save %s try-on record: %v", tryOnType, err))
+	}
+
+	presignedGeneratedURL, _ := utils.GetPresignedURL(r.Context(), objectKey)
+	tryOnRecord.GeneratedImageURL = presignedGeneratedURL
+
+	response := map[string]interface{}{
+		"result":        tryOnRecord.GeneratedImageURL,
+		"tryon_details": tryOnRecord,
+	}
+
 	utils.RespondJSON(w, http.StatusOK, response)
 }

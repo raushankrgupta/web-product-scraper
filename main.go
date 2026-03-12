@@ -45,6 +45,7 @@ func main() {
 	http.Handle("/auth/signup", corsMiddleware(http.HandlerFunc(api.SignupHandler)))
 	http.Handle("/auth/verify-otp", corsMiddleware(http.HandlerFunc(api.VerifyOTPHandler)))
 	http.Handle("/auth/login", corsMiddleware(http.HandlerFunc(api.LoginHandler)))
+	http.Handle("/auth/google", corsMiddleware(http.HandlerFunc(api.GoogleLoginHandler)))
 	http.Handle("/auth/forgot-password", corsMiddleware(http.HandlerFunc(api.ForgotPasswordHandler)))
 	http.Handle("/auth/reset-password", corsMiddleware(http.HandlerFunc(api.ResetPasswordHandler)))
 	http.Handle("/auth/change-password", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ChangePasswordHandler))))
@@ -57,14 +58,21 @@ func main() {
 	http.Handle("/product/details", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler))))
 	http.Handle("/product/upload", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.UploadProductHandler))))
 
+	http.Handle("/themes", corsMiddleware(http.HandlerFunc(api.GetThemesHandler)))
+
 	// Protected Routes (Require Token)
 	http.Handle("/persons", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
 	http.Handle("/persons/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
 
 	http.Handle("/try-on", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.VirtualTryOnHandler))))
+	http.Handle("/try-on/individual", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.IndividualTryOnHandler))))
+	http.Handle("/try-on/couple", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.CoupleTryOnHandler))))
+	http.Handle("/try-on/group", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GroupTryOnHandler))))
 	http.Handle("/gallery", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
 	http.Handle("/gallery/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
 	http.Handle("/feedback", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.FeedbackHandler))))
+	http.Handle("/wardrobe", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler))))
+	http.Handle("/wardrobe/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler))))
 
 	port := config.Port
 	fmt.Printf("Server starting on port %s...\n", port)

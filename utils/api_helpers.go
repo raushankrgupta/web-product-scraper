@@ -36,14 +36,27 @@ func RespondError(w http.ResponseWriter, logger *strings.Builder, message string
 func PresignImageURLs(ctx context.Context, images []string) []string {
 	var presignedURLs []string
 	for _, img := range images {
-		if strings.HasPrefix(img, "http") {
-			presignedURLs = append(presignedURLs, img)
+		if img == "" {
 			continue
 		}
-		if url, err := GetPresignedURL(ctx, img); err == nil {
-			presignedURLs = append(presignedURLs, url)
-		} else {
+		if strings.Contains(img, "amazonaws.com/") {
+			parts := strings.SplitN(img, "amazonaws.com/", 2)
+			if len(parts) == 2 {
+				key := strings.SplitN(parts[1], "?", 2)[0]
+				if presigned, err := GetPresignedURL(ctx, key); err == nil {
+					presignedURLs = append(presignedURLs, presigned)
+					continue
+				}
+			}
 			presignedURLs = append(presignedURLs, img)
+		} else if strings.HasPrefix(img, "http") {
+			presignedURLs = append(presignedURLs, img)
+		} else {
+			if url, err := GetPresignedURL(ctx, img); err == nil {
+				presignedURLs = append(presignedURLs, url)
+			} else {
+				presignedURLs = append(presignedURLs, img)
+			}
 		}
 	}
 	return presignedURLs

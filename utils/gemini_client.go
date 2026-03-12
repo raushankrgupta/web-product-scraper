@@ -93,9 +93,8 @@ Dimensions: %s
 		case genai.Blob:
 			return p.Data, nil
 		default:
-			// Log the type for debugging (printing to stdout/err since we don't have logger passed here easily, or use fmt)
-			fmt.Printf("Received unexpected part type: %T\n", p)
-			// Return string representation as fallback?
+			errMsg := fmt.Sprintf("Received unexpected part type: %T", p)
+			fmt.Println(errMsg)
 			return []byte(fmt.Sprintf("%v", p)), nil
 		}
 	}
@@ -118,4 +117,350 @@ func fetchImage(pathOrURL string) ([]byte, error) {
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+func fetchImageLogged(label, url string) ([]byte, string, error) {
+	data, err := fetchImage(url)
+	if err != nil {
+		fmt.Printf("[Gemini] FAILED to fetch %s image: %v (url prefix: %.80s...)\n", label, err, url)
+		return nil, "", err
+	}
+	mime := "jpeg"
+	if len(data) > 4 {
+		if data[0] == 0x89 && data[1] == 0x50 {
+			mime = "png"
+		} else if data[0] == 0x52 && data[1] == 0x49 {
+			mime = "webp"
+		}
+	}
+	fmt.Printf("[Gemini] Fetched %s image OK (%d bytes, %s)\n", label, len(data), mime)
+	return data, mime, nil
+}
+
+// PersonTryOnData holds the presigned URLs and details for a person in a try-on session
+type PersonTryOnData struct {
+	Details        string
+	PersonImageURL string
+	TopURL         []string
+	BottomURL      []string
+	AccessoryURL   []string
+	DressURL       []string
+}
+
+// GenerateMultiPersonTryOnImage generates a multi-person virtual try-on image using Gemini
+func GenerateMultiPersonTryOnImage(ctx context.Context, tryOnType string, themeImageURL, themeReferenceURL, themeDescription string, people []PersonTryOnData) ([]byte, error) {
+	if config.GeminiAPIKey == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
+	}
+
+	client, err := genai.NewClient(ctx, option.WithAPIKey(config.GeminiAPIKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Gemini client: %v", err)
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel("gemini-3-pro-image-preview")
+
+	imgCount := 0
+	var parts []genai.Part
+
+	promptBuilder := strings.Builder{}
+	promptBuilder.WriteString("I want the garment/clothing product images provided to be worn by each person.\n")
+	promptBuilder.WriteString(fmt.Sprintf("There are %d people. For each person I provide their photo followed by the garment images they must wear.\n", len(people)))
+	promptBuilder.WriteString("Remove all original clothing and dress each person ONLY in their provided garment images.\n")
+	promptBuilder.WriteString("The garments in the output must be an identical copy of the provided garment images — same color, design, pattern, fabric, texture.\n")
+	promptBuilder.WriteString("Do NOT invent or substitute any clothing.\n")
+	promptBuilder.WriteString("Show 100% truth, do not change the persons' faces or bodies.\n")
+	if themeDescription != "" {
+		promptBuilder.WriteString(fmt.Sprintf("\nScene/Theme: %s\n", themeDescription))
+	}
+
+	parts = append(parts, genai.Text(promptBuilder.String()))
+
+	for i, p := range people {
+		label := fmt.Sprintf("Person %d", i+1)
+
+		if p.Details != "" {
+			parts = append(parts, genai.Text(fmt.Sprintf("%s (%s) — photo followed by their garments:", label, p.Details)))
+		} else {
+			parts = append(parts, genai.Text(fmt.Sprintf("%s — photo followed by their garments:", label)))
+		}
+
+		if p.PersonImageURL != "" {
+			if b, mime, err := fetchImageLogged(label+"-photo", p.PersonImageURL); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+		for _, url := range p.TopURL {
+			if b, mime, err := fetchImageLogged(label+"-top", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+		for _, url := range p.BottomURL {
+			if b, mime, err := fetchImageLogged(label+"-bottom", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+		for _, url := range p.DressURL {
+			if b, mime, err := fetchImageLogged(label+"-dress", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+		for _, url := range p.AccessoryURL {
+			if b, mime, err := fetchImageLogged(label+"-accessory", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+	}
+
+	if themeImageURL != "" {
+		if b, mime, err := fetchImageLogged("theme-background", themeImageURL); err == nil {
+			parts = append(parts, genai.Text("Use this image as the background environment:"))
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+
+	fmt.Printf("[Gemini] %s try-on: sending %d images in %d parts to model\n", tryOnType, imgCount, len(parts))
+
+	resp, err := model.GenerateContent(ctx, parts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate content: %v", err)
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("no content generated")
+	}
+
+	for _, part := range resp.Candidates[0].Content.Parts {
+		switch p := part.(type) {
+		case genai.Text:
+			fmt.Printf("[Gemini] Response type: TEXT (%d bytes)\n", len(p))
+			return []byte(p), nil
+		case genai.Blob:
+			fmt.Printf("[Gemini] Response type: IMAGE (%d bytes, %s)\n", len(p.Data), p.MIMEType)
+			return p.Data, nil
+		default:
+			return []byte(fmt.Sprintf("%v", p)), nil
+		}
+	}
+
+	return nil, fmt.Errorf("unexpected response format (empty content)")
+}
+
+// GenerateCoupleTryOnImage generates a virtual try-on image specifically structured for exactly 2 people (a couple).
+func GenerateCoupleTryOnImage(ctx context.Context, themeImageURL, themeDescription string, people []PersonTryOnData) ([]byte, error) {
+	if config.GeminiAPIKey == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
+	}
+	if len(people) != 2 {
+		return nil, fmt.Errorf("GenerateCoupleTryOnImage requires exactly 2 people")
+	}
+
+	client, err := genai.NewClient(ctx, option.WithAPIKey(config.GeminiAPIKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Gemini client: %v", err)
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel("gemini-3-pro-image-preview")
+
+	imgCount := 0
+	var parts []genai.Part
+
+	promptBuilder := strings.Builder{}
+	promptBuilder.WriteString("I want the garment/clothing product images provided to be worn by each person.\n")
+	promptBuilder.WriteString("There are 2 people. For each person I provide their photo followed by the garment images they must wear.\n")
+	promptBuilder.WriteString("Remove all original clothing and dress each person ONLY in their provided garment images.\n")
+	promptBuilder.WriteString("The garments in the output must be an identical copy of the provided garment images — same color, design, pattern, fabric, texture.\n")
+	promptBuilder.WriteString("Do NOT invent or substitute any clothing.\n")
+	promptBuilder.WriteString("Show 100% truth, do not change the persons' faces or bodies.\n")
+	if themeDescription != "" {
+		promptBuilder.WriteString(fmt.Sprintf("\nScene/Theme: %s\n", themeDescription))
+	}
+
+	parts = append(parts, genai.Text(promptBuilder.String()))
+
+	for i, p := range people {
+		label := fmt.Sprintf("Person %d", i+1)
+
+		if p.Details != "" {
+			parts = append(parts, genai.Text(fmt.Sprintf("%s (%s) — photo followed by their garments:", label, p.Details)))
+		} else {
+			parts = append(parts, genai.Text(fmt.Sprintf("%s — photo followed by their garments:", label)))
+		}
+
+		if p.PersonImageURL != "" {
+			if b, mime, err := fetchImageLogged(label+"-photo", p.PersonImageURL); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+		for _, url := range p.TopURL {
+			if b, mime, err := fetchImageLogged(label+"-top", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+		for _, url := range p.BottomURL {
+			if b, mime, err := fetchImageLogged(label+"-bottom", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+		for _, url := range p.DressURL {
+			if b, mime, err := fetchImageLogged(label+"-dress", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+		for _, url := range p.AccessoryURL {
+			if b, mime, err := fetchImageLogged(label+"-accessory", url); err == nil {
+				parts = append(parts, genai.ImageData(mime, b))
+				imgCount++
+			}
+		}
+	}
+
+	if themeImageURL != "" {
+		if b, mime, err := fetchImageLogged("theme-background", themeImageURL); err == nil {
+			parts = append(parts, genai.Text("Use this image as the background environment:"))
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+
+	fmt.Printf("[Gemini] Couple try-on: sending %d images in %d parts to model\n", imgCount, len(parts))
+
+	resp, err := model.GenerateContent(ctx, parts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate content: %v", err)
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("no content generated")
+	}
+
+	for _, part := range resp.Candidates[0].Content.Parts {
+		switch p := part.(type) {
+		case genai.Text:
+			fmt.Printf("[Gemini] Response type: TEXT (%d bytes)\n", len(p))
+			return []byte(p), nil
+		case genai.Blob:
+			fmt.Printf("[Gemini] Response type: IMAGE (%d bytes, %s)\n", len(p.Data), p.MIMEType)
+			return p.Data, nil
+		default:
+			return []byte(fmt.Sprintf("%v", p)), nil
+		}
+	}
+
+	return nil, fmt.Errorf("unexpected response format (empty content)")
+}
+
+// GenerateIndividualTryOnImage generates a virtual try-on image specifically structured for exactly 1 person.
+func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescription string, person PersonTryOnData) ([]byte, error) {
+	if config.GeminiAPIKey == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
+	}
+
+	client, err := genai.NewClient(ctx, option.WithAPIKey(config.GeminiAPIKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Gemini client: %v", err)
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel("gemini-3-pro-image-preview")
+
+	imgCount := 0
+	var parts []genai.Part
+
+	promptBuilder := strings.Builder{}
+	promptBuilder.WriteString("I want the garment/clothing product images provided to be worn by the person in the photo.\n")
+	promptBuilder.WriteString("Remove all original clothing from the person and dress them ONLY in the exact garment images provided.\n")
+	promptBuilder.WriteString("The garments in the output must be an identical copy of the provided garment images — same color, design, pattern, fabric, texture.\n")
+	promptBuilder.WriteString("Do NOT invent or substitute any clothing.\n")
+	promptBuilder.WriteString("Show 100% truth, do not change the person's face or body.\n")
+	if person.Details != "" {
+		promptBuilder.WriteString(fmt.Sprintf("\nPerson Details: %s\n", person.Details))
+	}
+	if themeDescription != "" {
+		promptBuilder.WriteString(fmt.Sprintf("\nScene/Theme: %s\n", themeDescription))
+	}
+
+	parts = append(parts, genai.Text(promptBuilder.String()))
+
+	if person.PersonImageURL != "" {
+		if b, mime, err := fetchImageLogged("person", person.PersonImageURL); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+
+	for _, url := range person.TopURL {
+		if b, mime, err := fetchImageLogged("top", url); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+	for _, url := range person.BottomURL {
+		if b, mime, err := fetchImageLogged("bottom", url); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+	for _, url := range person.DressURL {
+		if b, mime, err := fetchImageLogged("dress", url); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+	for _, url := range person.AccessoryURL {
+		if b, mime, err := fetchImageLogged("accessory", url); err == nil {
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+
+	if themeImageURL != "" {
+		if b, mime, err := fetchImageLogged("theme-background", themeImageURL); err == nil {
+			parts = append(parts, genai.Text("Use this image as the background environment:"))
+			parts = append(parts, genai.ImageData(mime, b))
+			imgCount++
+		}
+	}
+
+	fmt.Printf("[Gemini] Individual try-on: sending %d images in %d parts to model\n", imgCount, len(parts))
+
+	if imgCount < 2 {
+		return nil, fmt.Errorf("not enough images fetched (got %d, need at least person + 1 garment)", imgCount)
+	}
+
+	resp, err := model.GenerateContent(ctx, parts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate content: %v", err)
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("no content generated")
+	}
+
+	for _, part := range resp.Candidates[0].Content.Parts {
+		switch p := part.(type) {
+		case genai.Text:
+			fmt.Printf("[Gemini] Response type: TEXT (%d bytes)\n", len(p))
+			return []byte(p), nil
+		case genai.Blob:
+			fmt.Printf("[Gemini] Response type: IMAGE (%d bytes, %s)\n", len(p.Data), p.MIMEType)
+			return p.Data, nil
+		default:
+			return []byte(fmt.Sprintf("%v", p)), nil
+		}
+	}
+
+	return nil, fmt.Errorf("unexpected response format (empty content)")
 }
