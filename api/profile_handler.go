@@ -168,7 +168,7 @@ func getPersons(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cursor.Close(ctx)
 
-	var persons []models.Person
+	persons := make([]models.Person, 0)
 	if err = cursor.All(ctx, &persons); err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Error decoding persons", http.StatusInternalServerError)
 		return
