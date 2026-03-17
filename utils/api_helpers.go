@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,6 +18,30 @@ func RespondJSON(w http.ResponseWriter, status int, payload interface{}) {
 		// Fallback error logging if encoding fails, though we can't write to w anymore if headers sent
 		fmt.Printf("Error encoding JSON response: %v\n", err)
 	}
+}
+
+// RespondJSONWithETag sends a JSON response with an ETag header derived from the payload.
+// If the client sends a matching If-None-Match header, it returns 304 Not Modified.
+func RespondJSONWithETag(w http.ResponseWriter, r *http.Request, status int, payload interface{}) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Printf("Error encoding JSON response: %v\n", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	etag := fmt.Sprintf(`"%x"`, md5.Sum(data))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Content-Type", "application/json")
+
+	if match := r.Header.Get("If-None-Match"); match == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	w.WriteHeader(status)
+	w.Write(data)
+	w.Write([]byte("\n"))
 }
 
 // RespondError sends a JSON error response and logs the error to the provided logger or stdout.

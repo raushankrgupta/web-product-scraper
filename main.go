@@ -55,24 +55,25 @@ func main() {
 	http.Handle("/legal/privacy-policy", corsMiddleware(http.HandlerFunc(api.GetPrivacyPolicy)))
 	http.Handle("/legal/terms-of-service", corsMiddleware(http.HandlerFunc(api.GetTermsOfService)))
 
-	http.Handle("/product/details", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler))))
-	http.Handle("/product/upload", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.UploadProductHandler))))
+	http.Handle("/product/details", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler)), true)))
+	http.Handle("/product/upload", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.UploadProductHandler)), true)))
 
-	http.Handle("/themes", corsMiddleware(http.HandlerFunc(api.GetThemesHandler)))
+	http.Handle("/themes", corsMiddleware(api.ImageCacheMiddleware(http.HandlerFunc(api.GetThemesHandler), true)))
 
 	// Protected Routes (Require Token)
-	http.Handle("/persons", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
-	http.Handle("/persons/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
+	// Person endpoints use mutable caching (profile photos can change)
+	http.Handle("/persons", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler)), false)))
+	http.Handle("/persons/", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler)), false)))
 
 	http.Handle("/try-on", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.VirtualTryOnHandler))))
 	http.Handle("/try-on/individual", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.IndividualTryOnHandler))))
 	http.Handle("/try-on/couple", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.CoupleTryOnHandler))))
 	http.Handle("/try-on/group", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GroupTryOnHandler))))
-	http.Handle("/gallery", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
-	http.Handle("/gallery/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
+	http.Handle("/gallery", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler)), true)))
+	http.Handle("/gallery/", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler)), true)))
 	http.Handle("/feedback", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.FeedbackHandler))))
-	http.Handle("/wardrobe", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler))))
-	http.Handle("/wardrobe/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler))))
+	http.Handle("/wardrobe", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler)), true)))
+	http.Handle("/wardrobe/", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler)), true)))
 
 	port := config.Port
 	fmt.Printf("Server starting on port %s...\n", port)

@@ -33,19 +33,34 @@ func InitS3() error {
 	return nil
 }
 
-// UploadFileToS3 uploads a file to S3 and returns the Object Key
-func UploadFileToS3(ctx context.Context, file io.Reader, objectKey string, contentType string) (string, error) {
+const (
+	// CacheControlImmutable is for images that never change (products, generated try-ons, themes).
+	CacheControlImmutable = "public, max-age=2592000, immutable"
+	// CacheControlMutable is for images that can change (profile photos).
+	CacheControlMutable = "public, max-age=86400"
+)
+
+// UploadFileToS3 uploads a file to S3 and returns the Object Key.
+// An optional cacheControl parameter sets the Cache-Control header on the S3 object.
+// If omitted, CacheControlImmutable is used by default.
+func UploadFileToS3(ctx context.Context, file io.Reader, objectKey string, contentType string, cacheControl ...string) (string, error) {
 	if S3Client == nil {
 		if err := InitS3(); err != nil {
 			return "", err
 		}
 	}
 
+	cc := CacheControlImmutable
+	if len(cacheControl) > 0 && cacheControl[0] != "" {
+		cc = cacheControl[0]
+	}
+
 	_, err := S3Client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(appConfig.AWSBucketName),
-		Key:         aws.String(objectKey),
-		Body:        file,
-		ContentType: aws.String(contentType),
+		Bucket:       aws.String(appConfig.AWSBucketName),
+		Key:          aws.String(objectKey),
+		Body:         file,
+		ContentType:  aws.String(contentType),
+		CacheControl: aws.String(cc),
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to upload file to S3: %v", err)

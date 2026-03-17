@@ -79,3 +79,16 @@ func GetUserIDFromContext(ctx context.Context) (string, error) {
 	}
 	return userID, nil
 }
+
+// ImageCacheMiddleware adds Cache-Control headers to responses for image-serving endpoints.
+// immutable=true uses a 30-day max-age with immutable; immutable=false uses a 1-day max-age.
+func ImageCacheMiddleware(next http.Handler, immutable bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if immutable {
+			w.Header().Set("Cache-Control", "public, max-age=2592000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+		}
+		next.ServeHTTP(w, r)
+	})
+}

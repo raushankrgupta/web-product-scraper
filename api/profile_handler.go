@@ -94,7 +94,7 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 			filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
 			objectKey := fmt.Sprintf("person_images/%s", filename)
 
-			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"))
+			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"), utils.CacheControlMutable)
 			file.Close()
 			if err != nil {
 				fmt.Printf("Failed to upload %s: %v\n", filename, err)
@@ -179,7 +179,7 @@ func getPersons(w http.ResponseWriter, r *http.Request) {
 		persons[i].ImagePaths = utils.PresignImageURLs(r.Context(), persons[i].ImagePaths)
 	}
 
-	utils.RespondJSON(w, http.StatusOK, persons)
+	utils.RespondJSONWithETag(w, r, http.StatusOK, persons)
 }
 
 func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID primitive.ObjectID) {
@@ -203,7 +203,7 @@ func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID 
 	// Generate Presigned URLs
 	person.ImagePaths = utils.PresignImageURLs(r.Context(), person.ImagePaths)
 
-	utils.RespondJSON(w, http.StatusOK, person)
+	utils.RespondJSONWithETag(w, r, http.StatusOK, person)
 }
 
 func deletePerson(w http.ResponseWriter, r *http.Request) {
@@ -359,7 +359,7 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 			filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
 			objectKey := fmt.Sprintf("person_images/%s", filename)
 
-			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"))
+			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"), utils.CacheControlMutable)
 			file.Close()
 			if err != nil {
 				fmt.Printf("Failed to upload %s: %v\n", filename, err)
@@ -383,5 +383,5 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 	// 5. Return Updated Person (with presigned URLs for current images)
 	person.ImagePaths = utils.PresignImageURLs(r.Context(), person.ImagePaths)
 
-	utils.RespondJSON(w, http.StatusOK, person)
+	utils.RespondJSONWithETag(w, r, http.StatusOK, person)
 }
