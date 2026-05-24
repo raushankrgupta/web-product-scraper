@@ -46,10 +46,14 @@ func main() {
 	http.Handle("/auth/verify-otp", corsMiddleware(http.HandlerFunc(api.VerifyOTPHandler)))
 	http.Handle("/auth/login", corsMiddleware(http.HandlerFunc(api.LoginHandler)))
 	http.Handle("/auth/google", corsMiddleware(http.HandlerFunc(api.GoogleLoginHandler)))
+	http.Handle("/auth/guest", corsMiddleware(http.HandlerFunc(api.GuestTokenHandler)))
 	http.Handle("/auth/forgot-password", corsMiddleware(http.HandlerFunc(api.ForgotPasswordHandler)))
 	http.Handle("/auth/reset-password", corsMiddleware(http.HandlerFunc(api.ResetPasswordHandler)))
 	http.Handle("/auth/change-password", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ChangePasswordHandler))))
 	http.Handle("/auth/delete-account", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.DeleteAccountHandler))))
+
+	// Billing / quota
+	http.Handle("/billing/status", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.BillingStatusHandler))))
 
 	// Legal Routes
 	http.Handle("/legal/privacy-policy", corsMiddleware(http.HandlerFunc(api.GetPrivacyPolicy)))
@@ -65,10 +69,17 @@ func main() {
 	http.Handle("/persons", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler)), false)))
 	http.Handle("/persons/", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler)), false)))
 
-	http.Handle("/try-on", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.VirtualTryOnHandler))))
-	http.Handle("/try-on/individual", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.IndividualTryOnHandler))))
-	http.Handle("/try-on/couple", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.CoupleTryOnHandler))))
-	http.Handle("/try-on/group", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GroupTryOnHandler))))
+	// Try-on endpoints: AuthMiddleware → QuotaMiddleware → handler.
+	// QuotaMiddleware checks the per-user daily cap before invoking the handler
+	// and bumps the counter after a successful 2xx response.
+	http.Handle("/try-on", corsMiddleware(api.AuthMiddleware(api.QuotaMiddleware(http.HandlerFunc(api.VirtualTryOnHandler)))))
+	http.Handle("/try-on/individual", corsMiddleware(api.AuthMiddleware(api.QuotaMiddleware(http.HandlerFunc(api.IndividualTryOnHandler)))))
+	http.Handle("/try-on/couple", corsMiddleware(api.AuthMiddleware(api.QuotaMiddleware(http.HandlerFunc(api.CoupleTryOnHandler)))))
+	http.Handle("/try-on/group", corsMiddleware(api.AuthMiddleware(api.QuotaMiddleware(http.HandlerFunc(api.GroupTryOnHandler)))))
+	// Guest try-on: one-shot endpoint for anonymous users (no persistence).
+	// Uses the same AuthMiddleware → QuotaMiddleware sandwich because guest
+	// tokens come through the same path with plan=guest, capped at 1/day.
+	http.Handle("/try-on/guest", corsMiddleware(api.AuthMiddleware(api.QuotaMiddleware(http.HandlerFunc(api.GuestTryOnHandler)))))
 	http.Handle("/gallery", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler)), true)))
 	http.Handle("/gallery/", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler)), true)))
 	http.Handle("/feedback", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.FeedbackHandler))))

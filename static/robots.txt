@@ -1,0 +1,16 @@
+User-agent: *
+Allow: /
+
+Disallow: /auth/
+Disallow: /persons
+Disallow: /persons/
+Disallow: /try-on
+Disallow: /try-on/
+Disallow: /gallery
+Disallow: /gallery/
+Disallow: /wardrobe
+Disallow: /wardrobe/
+Disallow: /feedback
+Disallow: /product/
+
+Sitemap: https://tryonfusion.com/sitemap.xml

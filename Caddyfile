@@ -1,3 +1,45 @@
-tryonfusion.com, www.tryonfusion.com {
+# Canonical host. All www traffic 301s to the apex below to consolidate
+# link equity into a single hostname (better for SEO + simpler analytics).
+www.tryonfusion.com {
+    redir https://tryonfusion.com{uri} permanent
+}
+
+tryonfusion.com {
+    # Legal URL canonicalisation — keep Play Store / Web Store stored URLs
+    # working after we move pages around.
+    redir /privacy            /privacy.html         permanent
+    redir /terms              /terms.html           permanent
+    redir /privacy-policy     /privacy.html         permanent
+    redir /terms-of-service   /terms.html           permanent
+
+    # Compression. Caddy enables HTTP/2 and TLS automatically. zstd + gzip
+    # cover every real-world client; the `precompressed` directive in the
+    # file_server below picks up any pre-built brotli files automatically
+    # if you choose to add them later (Caddy core does not ship brotli).
+    encode zstd gzip
+
+    # Long cache for static assets that change with the build (the cache-
+    # busting query string `?v=N` in index.html is the invalidation lever).
+    @static {
+        path *.css *.js *.svg *.png *.jpg *.jpeg *.webp *.ico
+    }
+    header @static Cache-Control "public, max-age=31536000, immutable"
+
+    # Shorter cache for HTML so we can ship copy fixes without users
+    # holding stale pages for a year.
+    @html {
+        path *.html /
+    }
+    header @html Cache-Control "public, max-age=300, must-revalidate"
+
+    # Security headers — cheap defence in depth.
+    header {
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy        "strict-origin-when-cross-origin"
+        X-Frame-Options        "SAMEORIGIN"
+        # Remove the default Server: Caddy fingerprint.
+        -Server
+    }
+
     reverse_proxy app:8080
 }

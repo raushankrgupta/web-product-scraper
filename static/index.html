@@ -4,16 +4,111 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TryOnFusion - The Future of Shopping</title>
+
+    <title>TryOnFusion — Virtual Try-On for Myntra, Flipkart, Amazon India</title>
     <meta name="description"
-        content="TryOnFusion: Paste product links and see how they look on you instantly. The future of virtual fitting is coming soon.">
+          content="Try clothes on yourself before buying on Myntra, Flipkart, Amazon India, TataCliq & Peter England. Free AI virtual fitting room — paste a link, see the look.">
+    <meta name="theme-color" content="#6C5CE7">
+
+    <!-- Canonical -->
+    <link rel="canonical" href="https://tryonfusion.com/">
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="TryOnFusion — Virtual Try-On for India's Top Stores">
+    <meta property="og:description"
+          content="Paste a product link from Myntra, Flipkart or Amazon. See it on yourself. Free.">
+    <meta property="og:image" content="https://tryonfusion.com/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:url" content="https://tryonfusion.com/">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="TryOnFusion">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="TryOnFusion — Virtual Try-On for India's Top Stores">
+    <meta name="twitter:description"
+          content="Paste a product link. See yourself wearing it. Free Android app.">
+    <meta name="twitter:image" content="https://tryonfusion.com/og-image.png">
+
+    <!-- Favicons. Fallback to logo.png is intentional — the favicon-*.png
+         files below should be generated and dropped alongside this file
+         (see tasks/seo-fixes.md). Browsers that 404 the sized files will
+         fall back to the logo.png entry. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="favicon-192.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    <link rel="icon" type="image/png" href="logo.png">
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Outfit:wght@400;700;900&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=2">
-    <link rel="icon" type="image/png" href="logo.png">
+    <link rel="stylesheet" href="style.css?v=3">
+
+    <!-- Structured data: SoftwareApplication. Update aggregateRating values
+         once real Play Store numbers are available; remove the block if
+         dishonest. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "TryOnFusion",
+      "operatingSystem": "ANDROID",
+      "applicationCategory": "ShoppingApplication",
+      "downloadUrl": "https://play.google.com/store/apps/details?id=com.raushan26.tryonfusion",
+      "url": "https://tryonfusion.com/",
+      "description": "Try clothes from Myntra, Flipkart, Amazon India, TataCliq and Peter England on yourself before buying. Free AI-powered virtual fitting room.",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "INR"
+      }
+    }
+    </script>
+
+    <!-- Structured data: FAQPage — eligible for rich results in Google search. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is my photo safe with TryOnFusion?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Your photos are uploaded over HTTPS and stored encrypted. We never share or sell your data. You can delete your account and all photos from inside the app."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is TryOnFusion really free?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. The free tier includes 5 try-ons per day with watermarked results. Plus and Pro plans remove the watermark and raise the daily limit."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Which stores does TryOnFusion support?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Myntra, Flipkart, Amazon India, TataCliq and Peter England — paste a product link from any of these and try it on instantly."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I try on outfits as a couple or family?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes — couple and group try-on are unique to TryOnFusion. Add multiple profiles, then generate a coordinated look in one tap."
+          }
+        }
+      ]
+    }
+    </script>
 </head>
 
 <body>
@@ -22,53 +117,206 @@
     <div class="container">
         <header>
             <div class="logo-container">
-                <img src="logo.png" alt="TryOnFusion Logo">
+                <img src="logo.png" alt="TryOnFusion logo">
                 <span class="logo-text">TryOnFusion</span>
             </div>
-            <!-- Socials or status indicator could go here -->
+            <nav class="nav">
+                <a href="#how-it-works">How it works</a>
+                <a href="#why">Why us</a>
+                <a href="#faq">FAQ</a>
+            </nav>
         </header>
 
         <section class="hero">
-            <h1>
-                Try. Fuse. Shop.<br>
-                <span>The Future is Fitting.</span>
-            </h1>
-            <p class="tagline">Paste a link. Upload your photo. See the magic. <br>Virtual fitting room with exclusive
-                coupons coming soon.</p>
+            <div class="hero-copy">
+                <h1>Try it on.<br><span>Before you buy.</span></h1>
+                <p class="tagline">
+                    Paste any product link from Myntra, Flipkart, Amazon, TataCliq or Peter England.
+                    See yourself in it — instantly. Free.
+                </p>
 
-            <a href="https://play.google.com/store/apps/details?id=com.raushan26.tryonfusion" target="_blank"
-                id="playStoreBtn" class="play-badge-link">
-                <img src="google_play_badge.svg" alt="Get it on Google Play" height="108">
-            </a>
+                <div class="cta-row">
+                    <a href="https://play.google.com/store/apps/details?id=com.raushan26.tryonfusion"
+                       target="_blank" rel="noopener"
+                       id="playStoreBtn" class="play-badge-link" aria-label="Get TryOnFusion on Google Play">
+                        <img src="google_play_badge.svg" alt="Get it on Google Play" height="64">
+                    </a>
+                    <!-- Chrome Web Store CTA — uncomment once the extension is approved.
+                    <a href="#" class="cta-secondary" target="_blank" rel="noopener">
+                        + Add to Chrome
+                    </a>
+                    -->
+                </div>
+
+                <p class="hero-trust">
+                    Free forever tier • 1 try-on without sign-up • No credit card
+                </p>
+            </div>
         </section>
 
-        <section class="features">
-            <div class="feature-card">
-                <div class="feature-icon">✨</div>
-                <h3>Instantly Try On</h3>
-                <p>Just paste a product link from your favorite store and see it on yourself in seconds.</p>
+        <!-- "Works with" trust strip — written as text so it renders before
+             any retailer logo SVGs are commissioned. Replace .store-pill
+             content with proper greyscale logos when assets land. -->
+        <section class="works-with" aria-label="Supported stores">
+            <span class="works-with-label">Works with:</span>
+            <ul class="store-pills">
+                <li class="store-pill">Amazon</li>
+                <li class="store-pill">Flipkart</li>
+                <li class="store-pill">Myntra</li>
+                <li class="store-pill">TataCliq</li>
+                <li class="store-pill">Peter England</li>
+            </ul>
+        </section>
+
+        <!-- How it works — 3 steps -->
+        <section id="how-it-works" class="how">
+            <h2 class="section-title">How it works</h2>
+            <p class="section-subtitle">Three steps. About ten seconds.</p>
+
+            <ol class="how-steps">
+                <li class="how-step">
+                    <div class="how-step-num">1</div>
+                    <h3>Paste a link</h3>
+                    <p>Drop a product URL from any supported store. We grab the product photo and details automatically.</p>
+                </li>
+                <li class="how-step">
+                    <div class="how-step-num">2</div>
+                    <h3>Pick your photo</h3>
+                    <p>Use a single full-body photo of yourself — or add your partner, parents, kids. One profile per person.</p>
+                </li>
+                <li class="how-step">
+                    <div class="how-step-num">3</div>
+                    <h3>See yourself in it</h3>
+                    <p>The AI generates a realistic try-on in seconds. Save, share to WhatsApp, or tap through to buy.</p>
+                </li>
+            </ol>
+        </section>
+
+        <!-- Differentiators -->
+        <section id="why" class="why">
+            <h2 class="section-title">Why TryOnFusion</h2>
+
+            <div class="why-grid">
+                <div class="why-card">
+                    <div class="why-icon">👥</div>
+                    <h3>Couple &amp; group try-on</h3>
+                    <p>Coordinate outfits with your partner or whole family. Unique to TryOnFusion — no one else does this.</p>
+                </div>
+                <div class="why-card">
+                    <div class="why-icon">🇮🇳</div>
+                    <h3>Built for Indian stores</h3>
+                    <p>Native support for Myntra, Flipkart, Amazon India, TataCliq, Peter England. No "doesn't ship here" errors.</p>
+                </div>
+                <div class="why-card">
+                    <div class="why-icon">✨</div>
+                    <h3>Themed looks</h3>
+                    <p>Wedding, festival, casual, street. Generated try-ons match the vibe — not just the clothing.</p>
+                </div>
+                <div class="why-card">
+                    <div class="why-icon">🎟️</div>
+                    <h3>Smart coupons <span class="badge-soon">soon</span></h3>
+                    <p>We auto-find the best coupon for whatever you try on. Try, save, buy — in one tap.</p>
+                </div>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">📸</div>
-                <h3>Your Photo, Your Look</h3>
-                <p>Upload your own image for the most realistic virtual fitting experience ever.</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">🎟️</div>
-                <h3>Smart Coupons</h3>
-                <p>We automatically find and apply the best coupons for the products you love.</p>
-            </div>
+        </section>
+
+        <!-- FAQ — visible accordion, paired with FAQ JSON-LD above for Google. -->
+        <section id="faq" class="faq">
+            <h2 class="section-title">Frequently asked</h2>
+
+            <details class="faq-item">
+                <summary>Is my photo safe?</summary>
+                <p>
+                    Your photos are uploaded over HTTPS and stored encrypted in our cloud.
+                    We never share or sell your data. You can delete your account and all
+                    associated photos from inside the app at any time.
+                </p>
+            </details>
+            <details class="faq-item">
+                <summary>Is it really free?</summary>
+                <p>
+                    Yes. The free tier includes 5 try-ons per day. The Plus plan raises that
+                    to 50/day and removes the watermark. The Pro plan is unlimited. You can
+                    also use the app once without even creating an account.
+                </p>
+            </details>
+            <details class="faq-item">
+                <summary>Which stores does it support?</summary>
+                <p>
+                    Myntra, Flipkart, Amazon India, TataCliq and Peter England today.
+                    More retailers ship every month — request yours via
+                    <a href="mailto:support@tryonfusion.com">support@tryonfusion.com</a>.
+                </p>
+            </details>
+            <details class="faq-item">
+                <summary>How accurate is the fit?</summary>
+                <p>
+                    The AI uses your full-body photo plus optional body measurements (height,
+                    weight, chest, waist, hips) to render a realistic try-on. Accuracy goes up
+                    sharply once you add measurements.
+                </p>
+            </details>
+            <details class="faq-item">
+                <summary>Can I try on as a couple?</summary>
+                <p>
+                    Yes — couple try-on is one of our headline features. Add two profiles,
+                    pick the outfits, and we generate a coordinated look in one tap.
+                </p>
+            </details>
+            <details class="faq-item">
+                <summary>Does it work for ethnic wear (sarees, kurtas, lehengas)?</summary>
+                <p>
+                    Yes. Ethnic categories actually perform especially well thanks to the
+                    themed try-on packs (wedding, festival, casual).
+                </p>
+            </details>
+            <details class="faq-item">
+                <summary>Will there be an iOS app?</summary>
+                <p>
+                    Coming. Until then, use the Android app or the Chrome extension
+                    on any product page.
+                </p>
+            </details>
+            <details class="faq-item">
+                <summary>How do I delete my data?</summary>
+                <p>
+                    From the app: <em>Profile → Delete Account</em>. We immediately
+                    soft-delete your account and wipe associated photos. Or email
+                    <a href="mailto:support@tryonfusion.com">support@tryonfusion.com</a>
+                    and we'll do it for you.
+                </p>
+            </details>
         </section>
 
         <footer>
-            <p>&copy; 2026 TryOnFusion. All rights reserved. <br> Developing the future of fashion tech.</p>
-            <div class="footer-links" style="margin-top: 10px;">
-                <a href="privacy.html"
-                    style="color: #666; text-decoration: none; margin: 0 10px; font-size: 0.9em;">Privacy Policy</a> |
-                <a href="terms.html" style="color: #666; text-decoration: none; margin: 0 10px; font-size: 0.9em;">Terms
-                    of Service</a> |
-                <a href="mailto:support@tryonfusion.com"
-                    style="color: #666; text-decoration: none; margin: 0 10px; font-size: 0.9em;">support@tryonfusion.com</a>
+            <div class="footer-grid">
+                <div class="footer-col footer-brand">
+                    <div class="logo-container small">
+                        <img src="logo.png" alt="TryOnFusion logo">
+                        <span class="logo-text">TryOnFusion</span>
+                    </div>
+                    <p class="footer-blurb">Try it on. Before you buy.</p>
+                </div>
+                <div class="footer-col">
+                    <h4>Product</h4>
+                    <a href="#how-it-works">How it works</a>
+                    <a href="#why">Features</a>
+                    <a href="https://play.google.com/store/apps/details?id=com.raushan26.tryonfusion" target="_blank" rel="noopener">Android app</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Company</h4>
+                    <a href="mailto:support@tryonfusion.com">Contact</a>
+                    <a href="#faq">FAQ</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Legal</h4>
+                    <a href="privacy.html">Privacy Policy</a>
+                    <a href="terms.html">Terms of Service</a>
+                </div>
+            </div>
+
+            <div class="footer-bottom">
+                <p>&copy; 2026 TryOnFusion. Made with love in India.</p>
             </div>
         </footer>
     </div>

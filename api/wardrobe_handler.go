@@ -172,6 +172,23 @@ func getWardrobe(w http.ResponseWriter, r *http.Request) {
 	utils.RespondJSON(w, http.StatusOK, response)
 }
 
+// extractS3Key strips a presigned S3 URL down to just the object key.
+// If the URL contains "amazonaws.com/", it extracts the path after that and
+// removes any query parameters (presign tokens). Non-S3 URLs are returned as-is.
+func extractS3Key(img string) string {
+	if strings.Contains(img, "amazonaws.com/") {
+		parts := strings.SplitN(img, "amazonaws.com/", 2)
+		if len(parts) == 2 {
+			// Strip query parameters (presign tokens)
+			key := strings.SplitN(parts[1], "?", 2)[0]
+			if key != "" {
+				return key
+			}
+		}
+	}
+	return img
+}
+
 // saveProduct handles saving a product to the wardrobe
 func saveProduct(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
@@ -197,6 +214,13 @@ func saveProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Strip presigned URLs down to S3 keys for durable storage.
+	// The getWardrobe handler will re-presign them on read.
+	var cleanImages []string
+	for _, img := range req.Images {
+		cleanImages = append(cleanImages, extractS3Key(img))
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -206,7 +230,7 @@ func saveProduct(w http.ResponseWriter, r *http.Request) {
 		ID:         primitive.NewObjectID(),
 		UserID:     userID,
 		Category:   req.Category,
-		Images:     req.Images,
+		Images:     cleanImages,
 		SourceURL:  req.SourceURL,
 		IsFavorite: false,
 		SavedAt:    time.Now(),
