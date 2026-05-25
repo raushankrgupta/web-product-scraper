@@ -22,6 +22,13 @@ func RespondJSON(w http.ResponseWriter, status int, payload interface{}) {
 
 // RespondJSONWithETag sends a JSON response with an ETag header derived from the payload.
 // If the client sends a matching If-None-Match header, it returns 304 Not Modified.
+//
+// Cache-Control is set to `private, no-cache` so clients always revalidate
+// against the server (using the ETag) before serving from cache. This is what
+// makes mutations like soft-delete visible on the very next read — without it,
+// any upstream `Cache-Control: public, max-age=...` header would let the
+// client serve a stale payload without ever asking the server. `private` also
+// blocks shared caches (CDN/proxies) from storing per-user data.
 func RespondJSONWithETag(w http.ResponseWriter, r *http.Request, status int, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -32,6 +39,7 @@ func RespondJSONWithETag(w http.ResponseWriter, r *http.Request, status int, pay
 
 	etag := fmt.Sprintf(`"%x"`, md5.Sum(data))
 	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, no-cache")
 	w.Header().Set("Content-Type", "application/json")
 
 	if match := r.Header.Get("If-None-Match"); match == etag {

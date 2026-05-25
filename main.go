@@ -65,9 +65,14 @@ func main() {
 	http.Handle("/themes", corsMiddleware(api.ImageCacheMiddleware(http.HandlerFunc(api.GetThemesHandler), true)))
 
 	// Protected Routes (Require Token)
-	// Person endpoints use mutable caching (profile photos can change)
-	http.Handle("/persons", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler)), false)))
-	http.Handle("/persons/", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler)), false)))
+	// Person endpoints return user-specific JSON (not raw images), so we don't
+	// wrap them in ImageCacheMiddleware. That middleware set
+	// `Cache-Control: public, max-age=86400`, which (a) caused the client to
+	// serve a stale list for 24h after a delete, masking the soft-delete in
+	// the DB, and (b) allowed shared caches to store user-specific data.
+	// The handler uses ETag-based revalidation via RespondJSONWithETag instead.
+	http.Handle("/persons", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
+	http.Handle("/persons/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.PersonHandler))))
 
 	// Try-on endpoints: AuthMiddleware → QuotaMiddleware → handler.
 	// QuotaMiddleware checks the per-user daily cap before invoking the handler
@@ -80,11 +85,21 @@ func main() {
 	// Uses the same AuthMiddleware → QuotaMiddleware sandwich because guest
 	// tokens come through the same path with plan=guest, capped at 1/day.
 	http.Handle("/try-on/guest", corsMiddleware(api.AuthMiddleware(api.QuotaMiddleware(http.HandlerFunc(api.GuestTryOnHandler)))))
-	http.Handle("/gallery", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler)), true)))
-	http.Handle("/gallery/", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler)), true)))
+	// Gallery, wardrobe, and feedback all return user-specific JSON (not raw
+	// images), and the response also contains presigned S3 URLs that expire
+	// quickly. Wrapping these in ImageCacheMiddleware caused two bugs:
+	//   (a) Cache-Control: public, max-age=2592000, immutable made the device
+	//       serve the list from cache for 30 days, so new items didn't
+	//       appear and deleted items reappeared on next visit.
+	//   (b) After ~1h the presigned URLs inside the cached response would
+	//       start 403'ing because the cache outlived the signatures.
+	// Same reasoning as /persons (above): use ETag-based revalidation via
+	// RespondJSONWithETag in the handlers instead.
+	http.Handle("/gallery", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
+	http.Handle("/gallery/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.GalleryHandler))))
 	http.Handle("/feedback", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.FeedbackHandler))))
-	http.Handle("/wardrobe", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler)), true)))
-	http.Handle("/wardrobe/", corsMiddleware(api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler)), true)))
+	http.Handle("/wardrobe", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler))))
+	http.Handle("/wardrobe/", corsMiddleware(api.AuthMiddleware(http.HandlerFunc(api.WardrobeHandler))))
 
 	port := config.Port
 	fmt.Printf("Server starting on port %s...\n", port)

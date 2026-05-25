@@ -182,7 +182,10 @@ func getGallery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Found %d images", len(tryOns)))
-	utils.RespondJSON(w, http.StatusOK, response)
+	// See main.go comment on /gallery routes: ETag + private, no-cache so
+	// new try-on results show up immediately and presigned URLs don't go
+	// stale inside a long-lived cached response.
+	utils.RespondJSONWithETag(w, r, http.StatusOK, response)
 }
 
 // deleteGalleryPhoto handles soft deleting a photo

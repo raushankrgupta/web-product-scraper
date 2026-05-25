@@ -169,7 +169,11 @@ func getWardrobe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Found %d items", len(items)))
-	utils.RespondJSON(w, http.StatusOK, response)
+	// ETag-based revalidation + Cache-Control: private, no-cache so the
+	// device asks us before serving cached data. Critical because (a) the
+	// list mutates on every add/remove/favourite toggle and (b) the
+	// presigned image URLs embedded in the payload expire quickly.
+	utils.RespondJSONWithETag(w, r, http.StatusOK, response)
 }
 
 // extractS3Key strips a presigned S3 URL down to just the object key.

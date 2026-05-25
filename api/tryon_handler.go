@@ -76,7 +76,11 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err = personCollection.FindOne(ctx, bson.M{"_id": personObjID, "user_id": userObjID}).Decode(&person)
+	err = personCollection.FindOne(ctx, bson.M{
+		"_id":        personObjID,
+		"user_id":    userObjID,
+		"is_deleted": bson.M{"$ne": true},
+	}).Decode(&person)
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Person not found", http.StatusNotFound)
 		return
@@ -223,6 +227,15 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		return
 	}
 
+	// Need userID early so we can scope person lookups to the caller (ownership
+	// check) and avoid returning someone else's profile if an ID is guessed.
+	userIDStr, err := GetUserIDFromContext(r.Context())
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: No user ID", http.StatusUnauthorized)
+		return
+	}
+	userObjID, _ := primitive.ObjectIDFromHex(userIDStr)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -263,7 +276,11 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 			return
 		}
 		var person models.Person
-		if err := personCollection.FindOne(ctx, bson.M{"_id": personObjID}).Decode(&person); err != nil {
+		if err := personCollection.FindOne(ctx, bson.M{
+			"_id":        personObjID,
+			"user_id":    userObjID,
+			"is_deleted": bson.M{"$ne": true},
+		}).Decode(&person); err != nil {
 			utils.RespondError(w, &logMessageBuilder, "Person not found: "+p.PersonID, http.StatusNotFound)
 			return
 		}
@@ -352,18 +369,15 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 	fileName := fmt.Sprintf("generated_tryon_%s_%d.jpg", tryOnType, time.Now().UnixNano())
 	objectKey := fmt.Sprintf("generated_images/%s", fileName)
 
-	_, err := utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	_, err = utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
 	if err != nil {
 		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Capture UserID
-	userID, _ := GetUserIDFromContext(r.Context())
-
 	tryOnRecord := models.TryOn{
 		ID:                primitive.NewObjectID(),
-		UserID:            userID,
+		UserID:            userIDStr,
 		Type:              tryOnType,
 		ThemeID:           req.ThemeID,
 		People:            req.People,

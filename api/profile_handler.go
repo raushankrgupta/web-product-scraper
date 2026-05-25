@@ -118,6 +118,7 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 		ImagePaths: imagePaths,
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
+		IsDeleted:  false,
 	}
 
 	collection := utils.GetCollection(config.DBName, CollectionName)
