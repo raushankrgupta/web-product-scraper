@@ -235,3 +235,7 @@ The project includes CI/CD via GitHub Actions (`.github/workflows/deploy.yml`) t
 ## License
 
 This project is proprietary. All rights reserved.
+
+reclaim all the space
+
+docker system prune -a --volumes -f
