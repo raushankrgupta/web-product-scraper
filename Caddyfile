@@ -1,12 +1,29 @@
-# Canonical host. All www traffic 301s to the apex below to consolidate
-# link equity into a single hostname (better for SEO + simpler analytics).
-www.tryonfusion.com {
-    redir https://tryonfusion.com{uri} permanent
-}
-
-tryonfusion.com {
+# Serve the same site on the apex and the www host.
+#
+# Why not 301/308 redirect www -> apex (the obvious "consolidate canonical
+# host" move)?  Two compounding browser-spec rules make any redirect on
+# `www` a footgun for API traffic:
+#
+#   1. 301 (Caddy's `permanent`) allows clients to rewrite POST -> GET and
+#      drop the request body. Every login/signup/google-auth POST sent to
+#      www would arrive at the apex as a body-less GET, hitting the
+#      "Method not allowed" branch in the Go handlers.
+#   2. 307/308 fix (1), but CORS preflight (OPTIONS) requests are not
+#      allowed to follow ANY 3xx response per the Fetch spec. So a browser
+#      doing a JSON POST to www (which triggers a preflight because of
+#      Content-Type / Authorization) sees the redirect on OPTIONS, fails
+#      with net::ERR_INVALID_REDIRECT, and never sends the real request.
+#
+# SEO consolidation is still handled — index.html already sets
+# <link rel="canonical" href="https://tryonfusion.com/">, which is what
+# Google actually consults for canonicalisation. The redirect was only ever
+# defence-in-depth on top of that, and it's not worth a permanently broken
+# www host.
+tryonfusion.com, www.tryonfusion.com {
     # Legal URL canonicalisation — keep Play Store / Web Store stored URLs
-    # working after we move pages around.
+    # working after we move pages around. These are GET-only browser
+    # navigations (not API calls / not CORS preflights), so a 301 here is
+    # safe and SEO-correct.
     redir /privacy            /privacy.html         permanent
     redir /terms              /terms.html           permanent
     redir /privacy-policy     /privacy.html         permanent
