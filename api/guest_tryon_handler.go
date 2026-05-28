@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/raushankrgupta/web-product-scraper/scrapers"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 )
 
@@ -97,8 +96,10 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 
 	if productURL != "" {
 		// Best-effort scrape. If it fails we still proceed with any uploaded
-		// product_image (don't block the user on a flaky scraper).
-		scraper, resolvedURL, err := scrapers.GetScraper(productURL)
+		// product_image (don't block the user on a flaky scraper). Routes
+		// Myntra URLs to the isolated myntra_scraper package and everything
+		// else to the standard scrapers.GetScraper factory.
+		scraper, resolvedURL, err := selectScraper(productURL)
 		if err != nil {
 			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scraper_not_found: %v", err))
 		} else if product, err := scraper.ScrapeProduct(resolvedURL); err != nil {

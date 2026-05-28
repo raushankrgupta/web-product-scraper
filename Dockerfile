@@ -13,8 +13,12 @@ RUN apt-get update && apt-get install -y \
 # apt installs specific versions, so we symlink to a known location if needed
 # RUN ln -s /usr/bin/chromedriver /usr/local/bin/chromedriver
 
-# 3. Ensure /tmp/chrome-user-data exists (Crucial for chromedp)
-RUN mkdir -p /tmp/chrome-user-data && chmod 777 /tmp/chrome-user-data
+# 3. Ensure Chromium user-data dirs exist (Crucial for chromedp). The Myntra
+# scraper uses its own profile dir (/tmp/chrome-user-data-myntra) so it can
+# run a concurrent Chromium instance without colliding on Chromium's exclusive
+# lock against scrapers/base's /tmp/chrome-user-data.
+RUN mkdir -p /tmp/chrome-user-data /tmp/chrome-user-data-myntra && \
+    chmod 777 /tmp/chrome-user-data /tmp/chrome-user-data-myntra
 
 # Set working directory
 WORKDIR /app
