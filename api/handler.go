@@ -9,7 +9,6 @@ import (
 
 	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
-	"github.com/raushankrgupta/web-product-scraper/scrapers"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -62,8 +61,10 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// GetScraper returns the scraper and the resolved URL (e.g. after following short links)
-	scraper, resolvedURL, err := scrapers.GetScraper(productURL)
+	// selectScraper resolves short links and routes Myntra URLs to the
+	// isolated myntra_scraper package; everything else still goes through
+	// the standard scrapers.GetScraper factory.
+	scraper, resolvedURL, err := selectScraper(productURL)
 	if err != nil {
 		saveFailedScrape("", fmt.Sprintf("scraper_not_found: %v", err))
 		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error finding scraper: %v", err), http.StatusBadRequest)

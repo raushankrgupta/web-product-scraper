@@ -4,20 +4,11 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
-
-func hostOf(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return u.Host
-}
 
 // BaseScraper handles common scraping logic
 type BaseScraper struct {
@@ -49,13 +40,9 @@ func (b *BaseScraper) FetchDocument(url string, validator func(*goquery.Document
 		if validator(doc) {
 			fmt.Printf("[BaseScraper] HTTP Success: %s\n", url)
 			return doc, nil
+		} else {
+			fmt.Printf("[BaseScraper] HTTP yielded invalid content (validator failed), trying fallbacks...\n")
 		}
-		// Log enough state to triage why the validator rejected the body. A
-		// suspiciously short body usually means we got a bot-challenge /
-		// region-blocked page, in which case a heavier strategy is worth it.
-		bodyLen := len(doc.Text())
-		titleText := strings.TrimSpace(doc.Find("title").Text())
-		fmt.Printf("[BaseScraper] HTTP yielded invalid content (validator failed) - bodyTextLen=%d title=%q url=%s\n", bodyLen, titleText, url)
 	} else {
 		fmt.Printf("[BaseScraper] HTTP Failed: %v\n", err)
 	}
@@ -118,16 +105,7 @@ func (b *BaseScraper) FetchDocumentHTTP(url string) (*goquery.Document, error) {
 	req.Header.Set("Sec-Ch-Ua-Platform", `"macOS"`)
 	req.Header.Set("Sec-Fetch-Dest", "document")
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
-	// Setting `Sec-Fetch-Site: cross-site` and an empty Referer was making
-	// some hosts (Myntra in particular) take an anti-bot fast path. Mimic a
-	// same-origin navigation from the site's own root, which is what a user
-	// pasting a link into a Myntra browser tab actually triggers.
-	if host := hostOf(req.URL.String()); host != "" {
-		req.Header.Set("Referer", "https://"+host+"/")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-	} else {
-		req.Header.Set("Sec-Fetch-Site", "cross-site")
-	}
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	req.Header.Set("Sec-Fetch-User", "?1")
 
 	res, err := b.Client.Do(req)
