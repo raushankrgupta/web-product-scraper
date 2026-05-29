@@ -96,11 +96,22 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 
 	if productURL != "" {
 		// Best-effort scrape. If it fails we still proceed with any uploaded
-		// product_image (don't block the user on a flaky scraper). Routes
-		// Myntra URLs to the isolated myntra_scraper package and everything
-		// else to the standard scrapers.GetScraper factory.
-		scraper, resolvedURL, err := selectScraper(productURL)
-		if err != nil {
+		// product_image (don't block the user on a flaky scraper).
+		//
+		// Myntra blocks this server's datacenter IP, so when server B is
+		// configured we delegate Myntra URLs to it; everything else (and all
+		// URLs when B is not configured) goes through the local scraper
+		// factory. We pass persist=false so B does an ephemeral scrape (no
+		// DB/S3 footprint) — the guest flow only needs the images and never
+		// persisted a product before.
+		if delegateToServerB(productURL) {
+			guestUserID, _ := GetUserIDFromContext(r.Context())
+			if product, err := scrapeViaServerB(r.Context(), guestUserID, productURL, false); err != nil {
+				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("server B scrape failed: %v", err))
+			} else {
+				productImageURLs = append(productImageURLs, product.Images...)
+			}
+		} else if scraper, resolvedURL, err := selectScraper(productURL); err != nil {
 			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scraper_not_found: %v", err))
 		} else if product, err := scraper.ScrapeProduct(resolvedURL); err != nil {
 			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scrape_failed: %v", err))

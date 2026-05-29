@@ -41,6 +41,17 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Scraping URL query: %s", productURL))
 
 	userID, _ := GetUserIDFromContext(r.Context())
+
+	// Myntra blocks this server's datacenter IP. When server B (which runs on
+	// a dynamic IP Myntra doesn't block) is configured, delegate Myntra scrapes
+	// to it — B performs the full scrape, S3 upload and persistence, and we
+	// proxy its response straight back. Non-Myntra URLs (and all URLs when B is
+	// not configured) continue to be scraped locally below.
+	if delegateToServerB(productURL) {
+		forwardScrapeToServerB(w, r, &logMessageBuilder, userID, productURL)
+		return
+	}
+
 	collection := utils.GetCollection(config.DBName, "products")
 
 	saveFailedScrape := func(resolvedURL, scrapeErr string) {

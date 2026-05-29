@@ -18,6 +18,17 @@ var (
 	AWSBucketName      string
 	DBName             string
 	ContactEmail       string
+
+	// ServerBScrapeURL is the full URL of the scraper-service (server B)
+	// internal endpoint, e.g. https://scraper-b.example.com/internal/scrape.
+	// When set, Myntra scrapes are delegated to server B (which runs on a
+	// dynamic IP Myntra doesn't block) instead of being attempted from this
+	// server's blocked datacenter IP. When empty, scraping happens locally
+	// exactly as before (backwards compatible).
+	ServerBScrapeURL string
+	// InternalAPISecret is sent to server B in the X-Internal-Secret header so
+	// B can verify the request came from this server. Must match B's value.
+	InternalAPISecret string
 )
 
 // LoadConfig loads environment variables from .env file
@@ -63,4 +74,9 @@ func LoadConfig() {
 	if ContactEmail == "" {
 		ContactEmail = "support@tryonfusion.com"
 	}
+
+	// Optional: delegate Myntra scrapes to server B. Left empty by default so
+	// existing deployments keep scraping locally until B is configured.
+	ServerBScrapeURL = os.Getenv("SERVER_B_SCRAPE_URL")
+	InternalAPISecret = os.Getenv("INTERNAL_API_SECRET")
 }
