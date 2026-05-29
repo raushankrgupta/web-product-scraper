@@ -139,6 +139,12 @@ AWS_REGION=your_region
 AWS_BUCKET_NAME=your_bucket
 AWS_ACCESS_KEY_ID=your_aws_key
 AWS_SECRET_ACCESS_KEY=your_aws_secret
+
+# Optional: delegate Myntra scrapes to the scraper-service (server B), which
+# runs on a dynamic IP Myntra doesn't block. Leave SERVER_B_SCRAPE_URL empty to
+# keep scraping Myntra locally. INTERNAL_API_SECRET must match server B's value.
+SERVER_B_SCRAPE_URL=https://your-server-b-host/internal/scrape
+INTERNAL_API_SECRET=the_same_long_random_secret_as_server_B
 ```
 *Press `Ctrl+O`, `Enter` to save, and `Ctrl+X` to exit.*
 
