@@ -187,12 +187,16 @@ func (b *baseScraper) FetchDocument(rawURL string, validator func(*goquery.Docum
 		fmt.Printf("[MyntraScraper] HTTP yielded invalid content (validator failed) - bodyTextLen=%d title=%q url=%s\n", bodyLen, titleText, rawURL)
 
 		// If the response is the host's "you are blocked / site under
-		// maintenance" stub AND we have no proxy configured, the next
-		// two strategies will hit the exact same IP and get the same
-		// stub. Short-circuit to save ~15s per request and surface an
-		// actionable error.
-		if looksLikeIPBlock(doc) && ScraperProxyURL() == nil {
-			return nil, fmt.Errorf("scrape blocked by %s (server returned %q in %d bytes) - the host is rejecting this server's IP as datacenter/bot traffic; configure SCRAPER_PROXY_URL (residential proxy or scraping service) to fix", host, titleText, bodyLen)
+		// maintenance" stub AND we have no proxy configured, a *headless*
+		// browser would hit the exact same IP and get the same stub, so we
+		// short-circuit to save ~15s and surface an actionable error.
+		//
+		// We deliberately do NOT short-circuit in headful render mode
+		// (CHROME_HEADLESS=false, i.e. the local cloudflared fallback): a
+		// real visible browser on a residential IP is precisely what gets
+		// past this block, so let it run ChromeDP below instead of bailing.
+		if looksLikeIPBlock(doc) && ScraperProxyURL() == nil && browserHeadless() {
+			return nil, fmt.Errorf("scrape blocked by %s (server returned %q in %d bytes) - the host is rejecting this server's IP as datacenter/bot traffic; configure SCRAPER_PROXY_URL (residential proxy or scraping service) or run the local renderer with CHROME_HEADLESS=false to fix", host, titleText, bodyLen)
 		}
 	} else {
 		fmt.Printf("[MyntraScraper] HTTP Failed: %v\n", err)

@@ -49,7 +49,7 @@ func (b *BaseScraper) FetchDocumentSelenium(url string) (*goquery.Document, erro
 
 	chromeCaps := chrome.Capabilities{
 		Args: []string{
-			"--headless=new", // Use new headless
+			"--headless=false", // Use new headless
 			"--no-sandbox",
 			"--disable-dev-shm-usage",
 			"--disable-blink-features=AutomationControlled",
