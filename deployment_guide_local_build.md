@@ -82,6 +82,8 @@ You need to tell the server to pull this new image instead of trying to build it
 
 ---
 
+docker system prune -a --volumes -f
+
 ## Step 4: Deploy (Remote Server)
 
 Now deploy using the pre-built image.
