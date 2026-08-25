@@ -56,7 +56,7 @@ type ResetPasswordRequest struct {
 func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Signup API]")
 
@@ -86,9 +86,12 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	err := collection.FindOne(ctx, bson.M{"email": req.Email}).Decode(&existingUser)
 	if err == nil {
 		if existingUser.Status == "deleted" {
-			// User was deleted, rename old email to allow re-signup
-			newEmail := fmt.Sprintf("deleted_%d_%s", time.Now().Unix(), req.Email)
-			_, updateErr := collection.UpdateOne(ctx, bson.M{"_id": existingUser.ID}, bson.M{"$set": bson.M{"email": newEmail}})
+			// User was deleted, rename the old email so it's free again.
+			// Uses the same tombstone shape as DeleteAccountHandler and
+			// GoogleLoginHandler so all three paths behave identically.
+			newEmail := tombstoneEmail(existingUser.Email, existingUser.ID)
+			_, updateErr := collection.UpdateOne(ctx, bson.M{"_id": existingUser.ID},
+				bson.M{"$set": bson.M{"email": newEmail, "deleted_email": existingUser.Email}})
 			if updateErr != nil {
 				utils.RespondError(w, &logMessageBuilder, "Failed to process previous account", http.StatusInternalServerError)
 				return
@@ -162,7 +165,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Login API]")
 
@@ -192,7 +195,8 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		if err == mongo.ErrNoDocuments {
 			utils.RespondError(w, &logMessageBuilder, "Invalid email or password", http.StatusUnauthorized)
 		} else {
-			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Database error: %v", err), http.StatusInternalServerError)
+			utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
+				"Something went wrong on our end. Please try again.", err, http.StatusInternalServerError)
 		}
 		return
 	}
@@ -246,7 +250,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Verify OTP API]")
 
@@ -276,7 +280,8 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 		if err == mongo.ErrNoDocuments {
 			utils.RespondError(w, &logMessageBuilder, "User not found", http.StatusNotFound)
 		} else {
-			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Database error: %v", err), http.StatusInternalServerError)
+			utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
+				"Something went wrong on our end. Please try again.", err, http.StatusInternalServerError)
 		}
 		return
 	}
@@ -340,7 +345,7 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Forgot Password API]")
 
@@ -413,7 +418,7 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Reset Password API]")
 
@@ -483,7 +488,7 @@ type ChangePasswordRequest struct {
 func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Change Password API]")
 
@@ -562,11 +567,17 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Delete Account API]")
 
-	if r.Method != http.MethodDelete {
+	// DELETE is the documented verb, but POST is accepted as an alias:
+	// several HTTP clients handle DELETE-with-body awkwardly, and the
+	// production log shows 10 GET requests to this path against a single
+	// successful DELETE. MethodGuard rejects everything else with a logged
+	// 405 instead of a silent 401.
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "DELETE, POST")
 		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -583,11 +594,27 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Soft delete: update status to 'deleted' and set deleted_at
+	// Look up the current email so we can free the address. Soft-deleting
+	// while leaving `email` in place is what created a permanent lockout:
+	// GoogleLoginHandler matches purely on email, finds the tombstone, and
+	// returns "Account deleted. Please sign up again" — an instruction that
+	// is impossible to follow, because signing up again hits the same row.
+	var existing models.User
+	if err := collection.FindOne(ctx, bson.M{"_id": userID}).Decode(&existing); err != nil {
+		utils.RespondError(w, &logMessageBuilder, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Soft delete: status -> 'deleted', stamp deleted_at, and rename the
+	// email to a tombstone address so the original is free for a genuine
+	// re-signup (via Google *or* email/password) while the audit trail is
+	// preserved in deleted_email. Matches what SignupHandler already did.
 	update := bson.M{
 		"$set": bson.M{
-			"status":     "deleted",
-			"deleted_at": time.Now(),
+			"status":        "deleted",
+			"deleted_at":    time.Now(),
+			"email":         tombstoneEmail(existing.Email, userID),
+			"deleted_email": existing.Email,
 		},
 	}
 
@@ -629,7 +656,7 @@ type GoogleUserInfo struct {
 func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Google Login API]")
 
@@ -721,19 +748,42 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 			user.ID = res.InsertedID.(primitive.ObjectID)
 			utils.AddToLogMessage(&logMessageBuilder, "New user registered via Google")
 		} else {
-			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Database error: %v", err), http.StatusInternalServerError)
+			utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
+				"Something went wrong on our end. Please try again.", err, http.StatusInternalServerError)
 			return
 		}
 	} else {
-		// Existing user
+		// Existing user.
 		if user.Status == "deleted" {
-			utils.RespondError(w, &logMessageBuilder, "Account deleted. Please sign up again to create a new account.", http.StatusForbidden)
-			return
-		}
-		// If they were pending, Google login verifies them
-		if user.Status == "pending" {
-			_, err := collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"status": "active"}})
-			if err != nil {
+			// A tombstone predating the delete-side fix still holds the
+			// original address, which used to 403 this login forever. Free
+			// the address now and fall through to creating a fresh account,
+			// so the "sign up again" instruction actually works.
+			freed := tombstoneEmail(user.Email, user.ID)
+			if _, updErr := collection.UpdateOne(ctx, bson.M{"_id": user.ID},
+				bson.M{"$set": bson.M{"email": freed, "deleted_email": user.Email}}); updErr != nil {
+				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to free deleted email: %v", updErr))
+				utils.RespondError(w, &logMessageBuilder, "Failed to process previous account", http.StatusInternalServerError)
+				return
+			}
+			utils.AddToLogMessage(&logMessageBuilder, "Freed a legacy deleted-account email and re-registering")
+
+			user = models.User{
+				Name:      name,
+				Email:     googleUser.Email,
+				Status:    "active",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			res, insertErr := collection.InsertOne(ctx, user)
+			if insertErr != nil {
+				utils.RespondError(w, &logMessageBuilder, "Failed to register user", http.StatusInternalServerError)
+				return
+			}
+			user.ID = res.InsertedID.(primitive.ObjectID)
+		} else if user.Status == "pending" {
+			// If they were pending, Google login verifies them
+			if _, err := collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"status": "active"}}); err != nil {
 				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to update status to active: %v", err))
 			} else {
 				user.Status = "active"

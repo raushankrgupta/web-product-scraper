@@ -5,14 +5,76 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/generative-ai-go/genai"
 	"github.com/raushankrgupta/web-product-scraper/config"
+	"github.com/raushankrgupta/web-product-scraper/utils/alert"
 	"google.golang.org/api/option"
 )
+
+// geminiModelName is the image-generation model every try-on path uses.
+const geminiModelName = "gemini-3-pro-image-preview"
+
+var (
+	geminiOnce   sync.Once
+	geminiClient *genai.Client
+	geminiErr    error
+)
+
+// getGeminiClient returns a process-wide genai client. It used to be
+// constructed and Close()d on every single request, which rebuilt the TLS
+// handshake and the auth exchange per try-on. genai.Client is safe for
+// concurrent use, so one instance for the process is both correct and
+// materially cheaper.
+//
+// The context passed here is only used for client construction; per-call
+// deadlines come from the ctx handed to GenerateContent.
+func getGeminiClient(ctx context.Context) (*genai.Client, error) {
+	geminiOnce.Do(func() {
+		if config.GeminiAPIKey == "" {
+			geminiErr = fmt.Errorf("GEMINI_API_KEY is not set")
+			return
+		}
+		// Deliberately not the request context: the singleton outlives the
+		// request that happened to construct it, and a cancelled parent
+		// would poison the client for every later caller.
+		geminiClient, geminiErr = genai.NewClient(context.Background(), option.WithAPIKey(config.GeminiAPIKey))
+	})
+	return geminiClient, geminiErr
+}
+
+// newImageModel returns a configured image-generation model. Every caller
+// goes through here so nobody can accidentally ship a path without
+// SafetySettings again — the legacy /try-on generator did exactly that, and
+// all four "no content generated" failures in the production log came from it.
+func newImageModel(ctx context.Context) (*genai.GenerativeModel, error) {
+	client, err := getGeminiClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	model := client.GenerativeModel(geminiModelName)
+	model.SafetySettings = permissiveSafetySettings()
+	return model, nil
+}
+
+// CloseGemini releases the shared client on shutdown.
+func CloseGemini() {
+	if geminiClient != nil {
+		_ = geminiClient.Close()
+	}
+}
+
+// imageFetchClient replaces the bare http.Get that fetchImage used to call.
+// http.Get uses http.DefaultClient, which has NO timeout at all — one stalled
+// S3 or CDN connection would hang a try-on request forever, independent of
+// the Gemini deadline.
+var imageFetchClient = &http.Client{Timeout: 15 * time.Second}
 
 // permissiveSafetySettings lowers the threshold for every tunable harm
 // category to "only block on HIGH probability". This doesn't affect
@@ -51,51 +113,209 @@ func runGemini(ctx context.Context, model *genai.GenerativeModel, label string, 
 	if retryParts == nil || !isSafetyBlock(err) {
 		return nil, err
 	}
-	fmt.Printf("[Gemini] %s retrying with stripped-down prompt after safety block\n", label)
+	slog.Warn("gemini retrying with stripped-down prompt after safety block", "label", label)
 	return callGemini(ctx, model, label+" (retry)", retryParts())
 }
 
+// formatRatings renders a SafetyRating slice as a compact, loggable string.
+func formatRatings(ratings []*genai.SafetyRating) string {
+	if len(ratings) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(ratings))
+	for _, r := range ratings {
+		if r == nil {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s=%s(blocked=%v)", r.Category, r.Probability, r.Blocked))
+	}
+	return strings.Join(out, ", ")
+}
+
 func callGemini(ctx context.Context, model *genai.GenerativeModel, label string, parts []genai.Part) ([]byte, error) {
+	start := time.Now()
 	resp, err := model.GenerateContent(ctx, parts...)
 	if err != nil {
 		var be *genai.BlockedError
 		if errors.As(err, &be) {
+			blockReason, ratings, finish := "", "", ""
 			if be.PromptFeedback != nil {
-				ratings := make([]string, 0, len(be.PromptFeedback.SafetyRatings))
-				for _, r := range be.PromptFeedback.SafetyRatings {
-					if r == nil {
-						continue
-					}
-					ratings = append(ratings, fmt.Sprintf("%s=%s(blocked=%v)", r.Category, r.Probability, r.Blocked))
-				}
-				fmt.Printf("[Gemini] %s blocked by prompt safety filter: reason=%s ratings=[%s]\n",
-					label, be.PromptFeedback.BlockReason, strings.Join(ratings, ", "))
+				blockReason = be.PromptFeedback.BlockReason.String()
+				ratings = formatRatings(be.PromptFeedback.SafetyRatings)
+				slog.Warn("gemini prompt blocked by safety filter",
+					"label", label, "block_reason", blockReason, "safety", ratings)
 			}
 			if be.Candidate != nil {
-				fmt.Printf("[Gemini] %s candidate blocked: finish_reason=%s\n", label, be.Candidate.FinishReason)
+				finish = be.Candidate.FinishReason.String()
+				slog.Warn("gemini candidate blocked", "label", label, "finish_reason", finish)
 			}
+			alert.Errorf("gemini", "generation blocked", err,
+				"label", label, "model", geminiModelName,
+				"block_reason", blockReason, "finish_reason", finish, "safety", ratings)
+			return nil, fmt.Errorf("failed to generate content: %v", err)
 		}
+
+		reportUpstreamError(label, err, time.Since(start))
 		return nil, fmt.Errorf("failed to generate content: %v", err)
 	}
 
-	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("no content generated")
+	out, err := extractImage(resp, label, time.Since(start))
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// extractImage pulls the generated image out of a Gemini response, or returns
+// an error that says exactly why there isn't one.
+//
+// Split out from callGemini so the blocked-response shapes — which are the
+// hard ones to reproduce against the live API — are unit-testable.
+func extractImage(resp *genai.GenerateContentResponse, label string, took time.Duration) ([]byte, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("no content generated (nil response)")
 	}
 
-	for _, part := range resp.Candidates[0].Content.Parts {
+	// A prompt-level block returns zero candidates. Everything that explains
+	// *why* lives on PromptFeedback — the old code threw it away and returned
+	// the bare string "no content generated", which is exactly why four
+	// production failures were undiagnosable.
+	if len(resp.Candidates) == 0 {
+		reason, ratings := "", ""
+		if resp.PromptFeedback != nil {
+			reason = resp.PromptFeedback.BlockReason.String()
+			ratings = formatRatings(resp.PromptFeedback.SafetyRatings)
+		}
+		slog.Error("gemini prompt blocked — no candidates",
+			"label", label, "block_reason", reason, "safety", ratings)
+		alert.Errorf("gemini", "prompt blocked — no candidates", nil,
+			"label", label, "model", geminiModelName,
+			"block_reason", reason, "safety", ratings)
+		return nil, fmt.Errorf("no content generated (prompt blocked: %s)", reason)
+	}
+
+	// genai.Candidate.Content is a *Content, and a safety-blocked candidate
+	// arrives with Content == nil. The previous
+	//   len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0
+	// short-circuits on the left, so the right-hand side dereferenced a nil
+	// pointer and panicked the process. This checks Content explicitly.
+	cand := resp.Candidates[0]
+	if cand == nil || cand.Content == nil || len(cand.Content.Parts) == 0 {
+		finish, ratings := "", ""
+		if cand != nil {
+			finish = cand.FinishReason.String()
+			ratings = formatRatings(cand.SafetyRatings)
+		}
+		slog.Error("gemini candidate blocked — no parts",
+			"label", label, "finish_reason", finish, "safety", ratings)
+		alert.Errorf("gemini", "candidate blocked — no parts", nil,
+			"label", label, "model", geminiModelName,
+			"finish_reason", finish, "safety", ratings)
+		return nil, fmt.Errorf("no content generated (blocked, finish_reason=%s)", finish)
+	}
+
+	for _, part := range cand.Content.Parts {
 		switch p := part.(type) {
-		case genai.Text:
-			fmt.Printf("[Gemini] %s response type: TEXT (%d bytes)\n", label, len(p))
-			return []byte(p), nil
 		case genai.Blob:
-			fmt.Printf("[Gemini] %s response type: IMAGE (%d bytes, %s)\n", label, len(p.Data), p.MIMEType)
+			slog.Info("gemini returned an image",
+				"label", label, "bytes", len(p.Data), "mime", p.MIMEType,
+				"duration_ms", float64(took.Microseconds())/1000)
 			return p.Data, nil
+
+		case genai.Text:
+			// This is an image-generation call. Returning text as if it were
+			// image bytes is what produced "JPEGs" on S3 that were actually
+			// an English sentence, handed to the user as a presigned URL.
+			preview := strings.TrimSpace(string(p))
+			if len(preview) > 200 {
+				preview = preview[:200]
+			}
+			slog.Error("gemini returned TEXT, expected an image", "label", label, "preview", preview)
+			alert.Errorf("gemini", "model returned TEXT, expected image", nil,
+				"label", label, "model", geminiModelName, "preview", preview)
+			return nil, fmt.Errorf("model returned text instead of an image: %s", preview)
+
 		default:
-			return []byte(fmt.Sprintf("%v", p)), nil
+			// Never coerce an unknown part into image bytes.
+			slog.Error("gemini returned an unsupported part type", "label", label, "part_type", fmt.Sprintf("%T", p))
+			alert.Errorf("gemini", "unsupported response part", nil,
+				"label", label, "part_type", fmt.Sprintf("%T", p))
+			return nil, fmt.Errorf("unexpected response part type %T", p)
 		}
 	}
 
 	return nil, fmt.Errorf("unexpected response format (empty content)")
+}
+
+// reportUpstreamError classifies a transport-level Gemini failure and alerts
+// accordingly. Quota/credit exhaustion is FATAL (it means every try-on is
+// dead until someone pays) and also trips the circuit breaker so we stop
+// paying for calls that cannot succeed.
+func reportUpstreamError(label string, err error, took time.Duration) {
+	switch {
+	case IsQuotaError(err):
+		GeminiBreaker.RecordQuotaFailure()
+		alert.Report(alert.Event{
+			Level:     alert.LevelFatal,
+			Component: "gemini",
+			Title:     "quota / credits exhausted",
+			Err:       err,
+			Latency:   took,
+			Fields:    map[string]string{"label": label, "model": geminiModelName},
+		})
+	case isTimeoutError(err):
+		alert.Errorf("gemini", "generation timed out", err,
+			"label", label, "model", geminiModelName, "took", took.Round(time.Millisecond).String())
+	default:
+		GeminiBreaker.RecordFailure()
+		alert.Errorf("gemini", "generation failed", err,
+			"label", label, "model", geminiModelName)
+	}
+}
+
+// ErrUpstreamUnavailable is returned when the circuit breaker is open, i.e.
+// the upstream is known-dead and we are deliberately not paying for a call
+// that cannot succeed.
+var ErrUpstreamUnavailable = errors.New("try-on is temporarily unavailable (upstream circuit open)")
+
+// guardBreaker fails fast when the Gemini breaker is open.
+func guardBreaker() error {
+	if ok, st := GeminiBreaker.Allow(); !ok {
+		slog.Warn("try-on rejected locally: upstream circuit is not closed", "state", string(st))
+		return ErrUpstreamUnavailable
+	}
+	return nil
+}
+
+// IsQuotaError matches the upstream billing/quota failures seen in
+// production: HTTP 429, RESOURCE_EXHAUSTED, and the Google AI Studio
+// "prepayment credits are depleted" message.
+func IsQuotaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "429") ||
+		strings.Contains(s, "quota") ||
+		// gRPC renders the status as "ResourceExhausted"; the REST transport
+		// uses "RESOURCE_EXHAUSTED". Match both after lowercasing.
+		strings.Contains(s, "resource_exhausted") ||
+		strings.Contains(s, "resourceexhausted") ||
+		strings.Contains(s, "credits are depleted") ||
+		strings.Contains(s, "billing")
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "context deadline exceeded") ||
+		strings.Contains(s, "timeout") ||
+		strings.Contains(s, "deadlineexceeded")
 }
 
 func isSafetyBlock(err error) bool {
@@ -183,100 +403,24 @@ func multiPersonTryOnPrompt(numPeople int, themeDescription string, terse bool) 
 	return sb.String()
 }
 
-// GenerateTryOnImage generates a virtual try-on image using Gemini
-func GenerateTryOnImage(ctx context.Context, personImageURL string, productImages []string, dimensions string, personDetails string) ([]byte, error) {
-	if config.GeminiAPIKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
-	}
+// maxImageBytes bounds a single fetched image. A CDN that streams forever
+// would otherwise be an unbounded allocation inside a request.
+const maxImageBytes = 25 << 20 // 25 MiB
 
-	client, err := genai.NewClient(ctx, option.WithAPIKey(config.GeminiAPIKey))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Gemini client: %v", err)
-	}
-	defer client.Close()
-
-	model := client.GenerativeModel("gemini-3-pro-image-preview")
-	// Note: "gemini-nano-banana" or "gemini-3-pro-image-preview" mentioned in prompt might be placeholders or specific preview models.
-	// We'll use a standard capable model. If specifically "gemini-1.5-pro" or similar is needed for vision + text -> image (if supported directly or via description).
-	// Wait, the user asked for "gemini-3-pro-image-preview". I should probably check if that's a valid model or use a standard one.
-	// Given the prompt "gemini nano banana (gemini-3-pro-image-preview)", I'll stick to a known working model for now, or try to use the requested one if it's a valid string.
-	// For now, let's use "gemini-1.5-pro" as it's the current standard for multimodal.
-	// If the user specifically wants image GENERATION, we might need a specific model or tool.
-	// Standard Gemini models generate text. For image generation, we might need to use a different endpoint or model if available in this SDK.
-	// However, assuming the user implies a multimodal capability where we send images and get an image back (or a description to generate one).
-	// The prompt says "After we get results from gemini send it as api response".
-	// If the model returns an image, we need to handle that.
-	// The Go SDK for Gemini supports generating content.
-
-	// Let's construct the prompt.
-	prompt := fmt.Sprintf(`
-I want the cloths product images to be worn by the person's image provided.
-Use the dimensions to accurately demonstrate how this will look upon the user.
-Show the size perfectly as well.
-Show 100%% truth, do not change the person's image with new person's image in due process.
-
-Person Details: %s
-Dimensions: %s
-`, personDetails, dimensions)
-
-	// Fetch images
-	personImgData, err := fetchImage(personImageURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch person image: %v", err)
-	}
-
-	parts := []genai.Part{
-		genai.Text(prompt),
-		genai.ImageData("jpeg", personImgData), // Assuming JPEG for now, ideally detect type
-	}
-
-	for _, url := range productImages {
-		if url == "" {
-			continue
-		}
-		prodImgData, err := fetchImage(url)
-		if err == nil {
-			parts = append(parts, genai.ImageData("jpeg", prodImgData))
-		}
-	}
-
-	resp, err := model.GenerateContent(ctx, parts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate content: %v", err)
-	}
-
-	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("no content generated")
-	}
-
-	// Check if we got an image back?
-	// Currently, Gemini API mainly returns text unless using specific image generation capabilities which might return a link or base64.
-	// If the model is a text-only model, this won't work for image generation.
-	// If the user expects an image, we might be using the wrong tool or model if we just expect "GenerateContent" to return an image directly without specific setup.
-	// BUT, for the sake of this task, we will assume the model returns the image data or we handle the text response.
-	// If the response contains an image part, we extract it.
-
-	for _, part := range resp.Candidates[0].Content.Parts {
-		switch p := part.(type) {
-		case genai.Text:
-			return []byte(p), nil
-		case genai.Blob:
-			return p.Data, nil
-		default:
-			errMsg := fmt.Sprintf("Received unexpected part type: %T", p)
-			fmt.Println(errMsg)
-			return []byte(fmt.Sprintf("%v", p)), nil
-		}
-	}
-
-	return nil, fmt.Errorf("unexpected response format (empty content)")
-}
-
-func fetchImage(pathOrURL string) ([]byte, error) {
+// fetchImage retrieves an image by path or URL. It takes a context so the
+// parent Gemini deadline can cancel an in-flight download, and uses a client
+// with an explicit timeout (see imageFetchClient) rather than http.Get.
+func fetchImage(ctx context.Context, pathOrURL string) ([]byte, error) {
 	if !strings.HasPrefix(pathOrURL, "http") {
 		return os.ReadFile(pathOrURL)
 	}
-	resp, err := http.Get(pathOrURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pathOrURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := imageFetchClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -286,13 +430,21 @@ func fetchImage(pathOrURL string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to fetch image, status: %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxImageBytes {
+		return nil, fmt.Errorf("image exceeds %d bytes", maxImageBytes)
+	}
+	return data, nil
 }
 
-func fetchImageLogged(label, url string) ([]byte, string, error) {
-	data, err := fetchImage(url)
+func fetchImageLogged(ctx context.Context, label, url string) ([]byte, string, error) {
+	data, err := fetchImage(ctx, url)
 	if err != nil {
-		fmt.Printf("[Gemini] FAILED to fetch %s image: %v (url prefix: %.80s...)\n", label, err, url)
+		slog.Warn("gemini image fetch failed", "label", label, "error", err.Error())
+		alert.Warnf("gemini", "image fetch failed", err, "label", label)
 		return nil, "", err
 	}
 	mime := "jpeg"
@@ -303,7 +455,7 @@ func fetchImageLogged(label, url string) ([]byte, string, error) {
 			mime = "webp"
 		}
 	}
-	fmt.Printf("[Gemini] Fetched %s image OK (%d bytes, %s)\n", label, len(data), mime)
+	slog.Debug("gemini image fetched", "label", label, "bytes", len(data), "mime", mime)
 	return data, mime, nil
 }
 
@@ -338,15 +490,14 @@ func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDe
 	if len(people) == 0 {
 		return nil, fmt.Errorf("no people provided")
 	}
-
-	client, err := genai.NewClient(ctx, option.WithAPIKey(config.GeminiAPIKey))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Gemini client: %v", err)
+	if err := guardBreaker(); err != nil {
+		return nil, err
 	}
-	defer client.Close()
 
-	model := client.GenerativeModel("gemini-3-pro-image-preview")
-	model.SafetySettings = permissiveSafetySettings()
+	model, err := newImageModel(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	type img struct {
 		mime string
@@ -364,7 +515,7 @@ func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDe
 	fetchAll := func(label string, urls []string) []img {
 		out := make([]img, 0, len(urls))
 		for _, u := range urls {
-			if b, mime, err := fetchImageLogged(label, u); err == nil {
+			if b, mime, err := fetchImageLogged(ctx, label, u); err == nil {
 				out = append(out, img{mime: mime, data: b})
 			}
 		}
@@ -377,7 +528,7 @@ func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDe
 		var pi personImgs
 		pi.details = p.Details
 		if p.PersonImageURL != "" {
-			if b, mime, err := fetchImageLogged(tag+"-photo", p.PersonImageURL); err == nil {
+			if b, mime, err := fetchImageLogged(ctx, tag+"-photo", p.PersonImageURL); err == nil {
 				pi.person = &img{mime: mime, data: b}
 			}
 		}
@@ -389,7 +540,7 @@ func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDe
 	}
 	var themeImg *img
 	if themeImageURL != "" {
-		if b, mime, err := fetchImageLogged("theme-background", themeImageURL); err == nil {
+		if b, mime, err := fetchImageLogged(ctx, "theme-background", themeImageURL); err == nil {
 			themeImg = &img{mime: mime, data: b}
 		}
 	}
@@ -443,9 +594,13 @@ func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDe
 			imgCount++
 		}
 	}
-	fmt.Printf("[Gemini] %s: sending %d images in %d parts to model\n", label, imgCount, len(primary))
+	slog.Info("gemini request built", "label", label, "images", imgCount, "parts", len(primary))
 
-	return runGemini(ctx, model, label, primary, retry)
+	out, err := runGemini(ctx, model, label, primary, retry)
+	if err == nil {
+		GeminiBreaker.RecordSuccess()
+	}
+	return out, err
 }
 
 // GenerateIndividualTryOnImage generates a virtual try-on image specifically structured for exactly 1 person.
@@ -453,15 +608,14 @@ func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescr
 	if config.GeminiAPIKey == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
 	}
-
-	client, err := genai.NewClient(ctx, option.WithAPIKey(config.GeminiAPIKey))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Gemini client: %v", err)
+	if err := guardBreaker(); err != nil {
+		return nil, err
 	}
-	defer client.Close()
 
-	model := client.GenerativeModel("gemini-3-pro-image-preview")
-	model.SafetySettings = permissiveSafetySettings()
+	model, err := newImageModel(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// Resolve images up front so we can pass them to both the primary
 	// attempt and any retry without re-downloading.
@@ -471,14 +625,14 @@ func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescr
 	}
 	var personImg *img
 	if person.PersonImageURL != "" {
-		if b, mime, err := fetchImageLogged("person", person.PersonImageURL); err == nil {
+		if b, mime, err := fetchImageLogged(ctx, "person", person.PersonImageURL); err == nil {
 			personImg = &img{mime: mime, data: b}
 		}
 	}
 	fetchAll := func(label string, urls []string) []img {
 		out := make([]img, 0, len(urls))
 		for _, u := range urls {
-			if b, mime, err := fetchImageLogged(label, u); err == nil {
+			if b, mime, err := fetchImageLogged(ctx, label, u); err == nil {
 				out = append(out, img{mime: mime, data: b})
 			}
 		}
@@ -490,7 +644,7 @@ func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescr
 	accessories := fetchAll("accessory", person.AccessoryURL)
 	var themeImg *img
 	if themeImageURL != "" {
-		if b, mime, err := fetchImageLogged("theme-background", themeImageURL); err == nil {
+		if b, mime, err := fetchImageLogged(ctx, "theme-background", themeImageURL); err == nil {
 			themeImg = &img{mime: mime, data: b}
 		}
 	}
@@ -538,7 +692,11 @@ func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescr
 			imgCount++
 		}
 	}
-	fmt.Printf("[Gemini] Individual try-on: sending %d images in %d parts to model\n", imgCount, len(primary))
+	slog.Info("gemini request built", "label", "individual try-on", "images", imgCount, "parts", len(primary))
 
-	return runGemini(ctx, model, "individual try-on", primary, retry)
+	out, err := runGemini(ctx, model, "individual try-on", primary, retry)
+	if err == nil {
+		GeminiBreaker.RecordSuccess()
+	}
+	return out, err
 }

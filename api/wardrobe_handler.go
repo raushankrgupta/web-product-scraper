@@ -77,7 +77,7 @@ func WardrobeHandler(w http.ResponseWriter, r *http.Request) {
 func getWardrobe(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Get Wardrobe API]")
 
@@ -197,7 +197,7 @@ func extractS3Key(img string) string {
 func saveProduct(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Save Wardrobe Product API]")
 
@@ -257,7 +257,7 @@ func saveProduct(w http.ResponseWriter, r *http.Request) {
 func removeProduct(w http.ResponseWriter, r *http.Request, itemIDHex string) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Remove Wardrobe Product API]")
 
@@ -296,7 +296,7 @@ func removeProduct(w http.ResponseWriter, r *http.Request, itemIDHex string) {
 func updateProductCategory(w http.ResponseWriter, r *http.Request, itemIDHex string) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Update Wardrobe Category API]")
 
@@ -344,7 +344,7 @@ func updateProductCategory(w http.ResponseWriter, r *http.Request, itemIDHex str
 func toggleWardrobeFavorite(w http.ResponseWriter, r *http.Request, itemIDHex string) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Toggle Wardrobe Favorite API]")
 

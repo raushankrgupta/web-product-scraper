@@ -33,8 +33,17 @@ func BillingStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Surface the upstream circuit state so the app can grey out the try-on
+	// button instead of letting users queue up doomed requests. During the
+	// production outage this endpoint was called 24 times and cheerfully
+	// reported healthy every single time.
+	breaker := utils.GeminiBreaker.Snapshot()
+	available := breaker["state"] == string(utils.StateClosed)
+
 	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
-		"is_guest": IsGuestFromContext(r.Context()),
-		"quota":    status,
+		"is_guest":        IsGuestFromContext(r.Context()),
+		"quota":           status,
+		"tryon_available": available,
+		"tryon_status":    breaker,
 	})
 }

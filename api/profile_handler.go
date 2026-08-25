@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,7 +40,7 @@ func PersonHandler(w http.ResponseWriter, r *http.Request) {
 func createPerson(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Create Person API]")
 
@@ -97,7 +98,7 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"), utils.CacheControlMutable)
 			file.Close()
 			if err != nil {
-				fmt.Printf("Failed to upload %s: %v\n", filename, err)
+				slog.Info(fmt.Sprintf("Failed to upload %s: %v", filename, err))
 				continue
 			}
 
@@ -127,7 +128,8 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 
 	result, err := collection.InsertOne(ctx, person)
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error saving to database: %v", err), http.StatusInternalServerError)
+		utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
+			"We couldn't save that profile. Please try again.", err, http.StatusInternalServerError)
 		return
 	}
 	person.ID = result.InsertedID.(primitive.ObjectID)
@@ -138,7 +140,7 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 func getPersons(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Get Persons API]")
 
@@ -210,7 +212,7 @@ func getPersonByID(w http.ResponseWriter, r *http.Request, idStr string, userID 
 func deletePerson(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Delete Person API]")
 
@@ -256,7 +258,7 @@ func deletePerson(w http.ResponseWriter, r *http.Request) {
 func updatePerson(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Update Person API]")
 
@@ -363,7 +365,7 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"), utils.CacheControlMutable)
 			file.Close()
 			if err != nil {
-				fmt.Printf("Failed to upload %s: %v\n", filename, err)
+				slog.Info(fmt.Sprintf("Failed to upload %s: %v", filename, err))
 				continue
 			}
 			imagePaths = append(imagePaths, objectKey)

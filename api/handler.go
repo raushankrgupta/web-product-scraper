@@ -4,20 +4,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
+	"github.com/raushankrgupta/web-product-scraper/scrapers"
 	"github.com/raushankrgupta/web-product-scraper/utils"
+	"github.com/raushankrgupta/web-product-scraper/utils/alert"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
+
+// hostOf extracts the domain from a URL for logging and alerting, without
+// carrying the (often tracker-laden) rest of the link into a Telegram message.
+func hostOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "unknown"
+	}
+	return strings.ToLower(u.Host)
+}
 
 // ScrapeHandler handles the scraping request
 func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Scrape API]")
 
@@ -38,6 +51,22 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Normalise before anything else touches the string. A URL pasted from a
+	// share sheet arrives as "\nhttps://...\n " often enough that it produced
+	// a real "net/url: invalid control character in URL" failure in
+	// production. This also strips utm_* so the same product shared from two
+	// places doesn't scrape twice.
+	rawURL := productURL
+	productURL, err := utils.NormalizeProductURL(productURL)
+	if err != nil {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Rejected malformed URL %q: %v", rawURL, err))
+		utils.RespondError(w, nil, "That doesn't look like a valid product link. Please paste the full URL.", http.StatusBadRequest)
+		return
+	}
+	if productURL != strings.TrimSpace(rawURL) {
+		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Normalized URL: %s", productURL))
+	}
+
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Scraping URL query: %s", productURL))
 
 	userID, _ := GetUserIDFromContext(r.Context())
@@ -48,8 +77,12 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	// proxy its response straight back. Non-Myntra URLs (and all URLs when B is
 	// not configured) continue to be scraped locally below.
 	if delegateToServerB(productURL) {
-		forwardScrapeToServerB(w, r, &logMessageBuilder, userID, productURL)
-		return
+		if forwardScrapeToServerB(w, r, &logMessageBuilder, userID, productURL) {
+			return
+		}
+		// B is unreachable. Fall through and try locally — this server's IP
+		// may be blocked, but a blocked attempt beats an unconditional 502.
+		utils.AddToLogMessage(&logMessageBuilder, "Server B unavailable — falling back to local scraper")
 	}
 
 	collection := utils.GetCollection(config.DBName, "products")
@@ -78,20 +111,29 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	scraper, resolvedURL, err := selectScraper(productURL)
 	if err != nil {
 		saveFailedScrape("", fmt.Sprintf("scraper_not_found: %v", err))
-		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error finding scraper: %v", err), http.StatusBadRequest)
+		// A domain we can't route is product-roadmap input, not an outage —
+		// WARN with rollup so a burst of the same domain is one message.
+		alert.Warnf("scraper", "no scraper found for domain", err, "domain", hostOf(productURL))
+		utils.L(r.Context()).Warn("no scraper found", "domain", hostOf(productURL), "url", productURL)
+		utils.RespondError(w, nil, "We can't read product details from that site yet. Try Amazon, Flipkart, Myntra, or upload the photo directly.", http.StatusBadRequest)
 		return
 	}
 
-	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Resolved URL: %s", resolvedURL))
+	adapter := scrapers.ScraperName(scraper)
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Resolved URL: %s (adapter=%s)", resolvedURL, adapter))
 
 	product, err := scraper.ScrapeProduct(resolvedURL)
 	if err != nil {
 		saveFailedScrape(resolvedURL, fmt.Sprintf("scrape_failed: %v", err))
-		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Scraping failed: %v", err), http.StatusInternalServerError)
+		alert.Errorf("scraper", "scrape failed after routing", err,
+			"domain", hostOf(resolvedURL), "adapter", adapter)
+		utils.L(r.Context()).Error("scrape failed", "domain", hostOf(resolvedURL), "adapter", adapter, "error", err.Error())
+		utils.RespondError(w, nil, "We couldn't read that product page. Please try again, or upload the photo directly.", http.StatusInternalServerError)
 		return
 	}
 
 	utils.AddToLogMessage(&logMessageBuilder, "Scraping successful")
+	utils.L(r.Context()).Info("scrape success", "domain", hostOf(resolvedURL), "adapter", adapter, "images", len(product.Images))
 
 	// Collect all images
 	var allImages []string

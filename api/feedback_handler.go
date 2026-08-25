@@ -20,8 +20,7 @@ func FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 	logMessageBuilder := strings.Builder{}
 	utils.AddToLogMessage(&logMessageBuilder, "FEEDBACK_SUBMISSION")
 	defer func() {
-		// Log the built message if needed
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 
 	if r.Method != http.MethodPost {
@@ -78,7 +77,8 @@ func FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 		path, err := utils.UploadFileToS3(context.TODO(), f, objectKey, file.Header.Get("Content-Type"))
 		f.Close()
 		if err != nil {
-			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error uploading file %s", file.Filename), http.StatusInternalServerError)
+			utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
+				"We couldn't attach that file. Please try again.", err, http.StatusInternalServerError)
 			return
 		}
 		filePaths = append(filePaths, path)

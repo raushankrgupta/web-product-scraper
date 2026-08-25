@@ -20,7 +20,7 @@ func utcDateString() string {
 // QuotaStatus describes a user's try-on usage for the current UTC day.
 type QuotaStatus struct {
 	Plan      string `json:"plan"`
-	Limit     int    `json:"limit"`     // 0 == unlimited
+	Limit     int    `json:"limit"` // 0 == unlimited
 	Used      int    `json:"used"`
 	Remaining int    `json:"remaining"` // -1 == unlimited
 	Date      string `json:"date"`

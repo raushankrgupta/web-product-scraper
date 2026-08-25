@@ -61,7 +61,7 @@ func GalleryHandler(w http.ResponseWriter, r *http.Request) {
 func getGallery(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Get Gallery API]")
 
@@ -132,7 +132,8 @@ func getGallery(w http.ResponseWriter, r *http.Request) {
 
 	cursor, err := collection.Find(ctx, filter, findOptions)
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Database query failed: %v", err), http.StatusInternalServerError)
+		utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
+			"We couldn't load your gallery. Please try again.", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -192,7 +193,7 @@ func getGallery(w http.ResponseWriter, r *http.Request) {
 func deleteGalleryPhoto(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Delete Gallery Photo API]")
 
@@ -246,7 +247,7 @@ func deleteGalleryPhoto(w http.ResponseWriter, r *http.Request) {
 
 func toggleFavorite(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
-	defer func() { fmt.Println(logMessageBuilder.String()) }()
+	defer func() { utils.FlushLog(r.Context(), &logMessageBuilder) }()
 
 	userID, err := GetUserIDFromContext(r.Context())
 	if err != nil {
@@ -290,7 +291,7 @@ func toggleFavorite(w http.ResponseWriter, r *http.Request) {
 
 func markSaved(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
-	defer func() { fmt.Println(logMessageBuilder.String()) }()
+	defer func() { utils.FlushLog(r.Context(), &logMessageBuilder) }()
 
 	userID, err := GetUserIDFromContext(r.Context())
 	if err != nil {
@@ -331,7 +332,7 @@ type TryonFeedbackRequest struct {
 
 func submitTryonFeedback(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
-	defer func() { fmt.Println(logMessageBuilder.String()) }()
+	defer func() { utils.FlushLog(r.Context(), &logMessageBuilder) }()
 
 	userID, err := GetUserIDFromContext(r.Context())
 	if err != nil {

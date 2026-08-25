@@ -14,12 +14,14 @@ import (
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/myntra_scraper"
 	"github.com/raushankrgupta/web-product-scraper/utils"
+	"github.com/raushankrgupta/web-product-scraper/utils/alert"
 )
 
 // serverBClient is reused across requests. Myntra scrapes on server B can run
-// the ChromeDP/Selenium fallback chain, which takes well over a minute, so the
-// timeout is generous.
-var serverBClient = &http.Client{Timeout: 3 * time.Minute}
+// the ChromeDP/Selenium fallback chain, so the timeout is generous — but not
+// 3 minutes, which was long enough for a user to give up, retry, and pay for
+// a second scrape while the first was still running.
+var serverBClient = &http.Client{Timeout: 90 * time.Second}
 
 // looksLikeKnownNonMyntraStore lets delegateToServerB classify direct store
 // URLs as "not Myntra" without paying for a redirect-following network
@@ -81,24 +83,36 @@ func callServerB(ctx context.Context, userID, productURL string, persist bool) (
 // and persistence) to server B and proxies B's response back to the client
 // verbatim, so the client sees exactly what it would have when scraping
 // happened locally.
-func forwardScrapeToServerB(w http.ResponseWriter, r *http.Request, logger *strings.Builder, userID, productURL string) {
+//
+// It returns false when B could not be reached at all, so the caller can fall
+// back to scraping locally. A local attempt may well be IP-blocked, but a
+// blocked attempt is strictly better than the unconditional 502 this used to
+// return — which is exactly what users got for six days while B's quick
+// tunnel hostname no longer resolved.
+func forwardScrapeToServerB(w http.ResponseWriter, r *http.Request, logger *strings.Builder, userID, productURL string) bool {
 	utils.AddToLogMessage(logger, fmt.Sprintf("Delegating Myntra scrape to server B: %s", productURL))
 
 	// The /product/details flow persists, exactly as the local path used to.
 	resp, err := callServerB(r.Context(), userID, productURL, true)
 	if err != nil {
-		utils.RespondError(w, logger, fmt.Sprintf("Scraper service (server B) unreachable: %v", err), http.StatusBadGateway)
-		return
+		utils.AddToLogMessage(logger, fmt.Sprintf("Server B unreachable: %v", err))
+		markServerBUnhealthy(err)
+		alert.Errorf("serverb", "scrape delegation failed", err, "url", redactHost(config.ServerBScrapeURL))
+		return false
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		utils.RespondError(w, logger, fmt.Sprintf("Failed reading server B response: %v", err), http.StatusBadGateway)
-		return
+		utils.AddToLogMessage(logger, fmt.Sprintf("Failed reading server B response: %v", err))
+		alert.Errorf("serverb", "unreadable response", err)
+		return false
 	}
 
 	utils.AddToLogMessage(logger, fmt.Sprintf("Server B responded %d", resp.StatusCode))
+	if resp.StatusCode >= 500 {
+		alert.Errorf("serverb", "scrape returned 5xx", fmt.Errorf("status %d", resp.StatusCode))
+	}
 
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
@@ -107,6 +121,18 @@ func forwardScrapeToServerB(w http.ResponseWriter, r *http.Request, logger *stri
 	w.Header().Set("Content-Type", ct)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+	return true
+}
+
+// markServerBUnhealthy records a transport failure seen on the request path so
+// /health reflects it immediately rather than waiting for the next 5-minute
+// poll.
+func markServerBUnhealthy(err error) {
+	serverBMu.Lock()
+	serverBHealthy = false
+	serverBReason = err.Error()
+	serverBChecked = time.Now()
+	serverBMu.Unlock()
 }
 
 // scrapeViaServerB delegates a scrape to server B and returns the parsed

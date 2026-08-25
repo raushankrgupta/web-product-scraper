@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -46,7 +47,7 @@ func UploadImagesToS3(ctx context.Context, urls []string, folderPrefix string) (
 
 			// Download and Upload
 			if err := downloadAndUpload(ctx, url, objectKey); err != nil {
-				fmt.Printf("Failed to process %s: %v\n", url, err)
+				slog.Info(fmt.Sprintf("Failed to process %s: %v", url, err))
 				return
 			}
 
