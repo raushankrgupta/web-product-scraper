@@ -42,11 +42,11 @@ var (
 // party. Telegram messages are stored on Telegram's servers indefinitely, so
 // a leaked presigned URL or API key there is a real disclosure.
 func redact(s string) string {
-	s = rePresigned.ReplaceAllString(s, "$1?<redacted>")
-	s = reAPIKeyQuery.ReplaceAllString(s, "${1}<redacted>")
-	s = reBearer.ReplaceAllString(s, "${1}<redacted>")
-	s = reAuthHeader.ReplaceAllString(s, "${1}<redacted>")
-	s = reTGToken.ReplaceAllString(s, "<redacted>")
+	s = rePresigned.ReplaceAllString(s, "$1?[redacted]")
+	s = reAPIKeyQuery.ReplaceAllString(s, "${1}[redacted]")
+	s = reBearer.ReplaceAllString(s, "${1}[redacted]")
+	s = reAuthHeader.ReplaceAllString(s, "${1}[redacted]")
+	s = reTGToken.ReplaceAllString(s, "[redacted]")
 	return s
 }
 
