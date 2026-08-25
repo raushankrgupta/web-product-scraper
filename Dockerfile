@@ -32,8 +32,14 @@ RUN go mod download
 # Copy the rest of the source code
 COPY . .
 
-# Build the application
-RUN go build -o web-product-scraper .
+# Build the application.
+#
+# APP_VERSION is injected into main.version, which tags every Telegram alert
+# and is reported by /health — so an alert can be traced back to the exact
+# build that emitted it. CI passes the git sha; a plain `docker build` gets
+# "dev".
+ARG APP_VERSION=dev
+RUN go build -ldflags "-X main.version=${APP_VERSION}" -o web-product-scraper .
 
 # Expose the port
 EXPOSE 8080

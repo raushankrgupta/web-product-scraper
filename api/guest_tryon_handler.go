@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/utils"
+	"github.com/raushankrgupta/web-product-scraper/utils/alert"
 )
 
 // GuestTryOnHandler runs a one-shot try-on for an anonymous (guest) user
@@ -28,7 +29,7 @@ import (
 // Either product_url or product_image must be provided.
 func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
-	defer func() { fmt.Println(logMessageBuilder.String()) }()
+	defer func() { utils.FlushLog(r.Context(), &logMessageBuilder) }()
 	utils.AddToLogMessage(&logMessageBuilder, "[Guest Try-On API]")
 
 	if r.Method != http.MethodPost {
@@ -57,7 +58,8 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 
 	personKey := fmt.Sprintf("guest_uploads/person_%d_%s", time.Now().UnixNano(), sanitizeFilename(personFileHeader.Filename))
 	if _, err := utils.UploadFileToS3(r.Context(), personFile, personKey, personFileHeader.Header.Get("Content-Type"), utils.CacheControlMutable); err != nil {
-		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to upload person image: %v", err), http.StatusInternalServerError)
+		utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
+			"We couldn't save your photo. Please try again.", err, http.StatusInternalServerError)
 		return
 	}
 	personImageURL, err := utils.GetPresignedURL(r.Context(), personKey)
@@ -68,6 +70,17 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Product — either a URL we scrape, or an uploaded product image
 	productURL := strings.TrimSpace(r.FormValue("product_url"))
+	if productURL != "" {
+		// Same normalisation as /product/details: share-sheet pastes carry
+		// newlines and tracking params.
+		normalized, err := utils.NormalizeProductURL(productURL)
+		if err != nil {
+			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Rejected malformed product_url %q: %v", productURL, err))
+			utils.RespondError(w, nil, "That doesn't look like a valid product link.", http.StatusBadRequest)
+			return
+		}
+		productURL = normalized
+	}
 	productFileHeader := firstFile(r, "product_image")
 	if productURL == "" && productFileHeader == nil {
 		utils.RespondError(w, &logMessageBuilder, "Provide either product_url or product_image", http.StatusBadRequest)
@@ -85,7 +98,8 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		defer pf.Close()
 		productKey := fmt.Sprintf("guest_uploads/product_%d_%s", time.Now().UnixNano(), sanitizeFilename(productFileHeader.Filename))
 		if _, err := utils.UploadFileToS3(r.Context(), pf, productKey, productFileHeader.Header.Get("Content-Type"), utils.CacheControlImmutable); err != nil {
-			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to upload product image: %v", err), http.StatusInternalServerError)
+			utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
+				"We couldn't save that product image. Please try again.", err, http.StatusInternalServerError)
 			return
 		}
 		signed, _ := utils.GetPresignedURL(r.Context(), productKey)
@@ -104,19 +118,36 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		// factory. We pass persist=false so B does an ephemeral scrape (no
 		// DB/S3 footprint) — the guest flow only needs the images and never
 		// persisted a product before.
+		scrapedViaB := false
 		if delegateToServerB(productURL) {
 			guestUserID, _ := GetUserIDFromContext(r.Context())
 			if product, err := scrapeViaServerB(r.Context(), guestUserID, productURL, false); err != nil {
-				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("server B scrape failed: %v", err))
+				// Don't give up here: fall through to the local scraper.
+				// This is the exact path that produced "Could not get
+				// product images" in production when B's tunnel hostname
+				// stopped resolving.
+				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("server B scrape failed, falling back to local: %v", err))
+				markServerBUnhealthy(err)
+				alert.Errorf("serverb", "guest scrape delegation failed", err)
 			} else {
 				productImageURLs = append(productImageURLs, product.Images...)
+				scrapedViaB = true
 			}
-		} else if scraper, resolvedURL, err := selectScraper(productURL); err != nil {
-			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scraper_not_found: %v", err))
-		} else if product, err := scraper.ScrapeProduct(resolvedURL); err != nil {
-			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scrape_failed: %v", err))
-		} else {
-			productImageURLs = append(productImageURLs, product.Images...)
+		}
+
+		if !scrapedViaB {
+			switch scraper, resolvedURL, err := selectScraper(productURL); {
+			case err != nil:
+				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scraper_not_found: %v", err))
+				alert.Warnf("scraper", "no scraper found for domain", err, "domain", hostOf(productURL), "flow", "guest")
+			default:
+				if product, err := scraper.ScrapeProduct(resolvedURL); err != nil {
+					utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scrape_failed: %v", err))
+					alert.Errorf("scraper", "scrape failed after routing", err, "domain", hostOf(resolvedURL), "flow", "guest")
+				} else {
+					productImageURLs = append(productImageURLs, product.Images...)
+				}
+			}
 		}
 	}
 
@@ -147,45 +178,40 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	//    image-gen safety classifier).
 	personDetails := strings.TrimSpace(r.FormValue("person_details"))
 
-	geminiCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	geminiCtx, cancel := context.WithTimeout(context.Background(), geminiTimeout())
 	defer cancel()
 
+	genStart := time.Now()
 	generated, err := utils.GenerateIndividualTryOnImage(geminiCtx, "", "", utils.PersonTryOnData{
 		Details:        personDetails,
 		PersonImageURL: personImageURL,
 		TopURL:         productImageURLs,
 	})
 	if err != nil {
-		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Gemini failed: %v", err))
-		errLower := strings.ToLower(err.Error())
-		switch {
-		case strings.Contains(errLower, "429"), strings.Contains(errLower, "quota"):
-			utils.RespondError(w, nil, "We're at capacity, please try again in a moment.", http.StatusTooManyRequests)
-		case strings.Contains(errLower, "blocked"), strings.Contains(errLower, "blockreason"), strings.Contains(errLower, "safety"):
-			// Gemini's safety filter rejected this combination — usually
-			// triggered by product PDPs that include model shots, or by
-			// person photos the classifier can't cleanly parse. Don't
-			// surface BlockReasonOther to the user; nudge them toward a
-			// recoverable action instead.
-			utils.RespondError(w, nil, "We couldn't generate a try-on for this item. Try a clearer photo of yourself, or pick a different product.", http.StatusUnprocessableEntity)
-		default:
-			utils.RespondError(w, nil, "Failed to generate try-on: "+err.Error(), http.StatusInternalServerError)
-		}
+		// Shared classifier so guest and signed-in try-on report the same
+		// status codes for the same upstream failure. The safety-block copy
+		// is tuned for a first-time user with no wardrobe to fall back on.
+		respondGenError(w, r, &logMessageBuilder, "/try-on/guest", "guest", err, genStart, map[int]string{
+			http.StatusUnprocessableEntity: "We couldn't generate a try-on for this item. Try a clearer photo of yourself, or pick a different product.",
+		})
 		return
 	}
+	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf(
+		"Guest try-on generated OK: bytes=%d duration=%s", len(generated), time.Since(genStart).Round(time.Millisecond)))
 
 	// 4. Upload result + return presigned URL. Don't write to the tryons
 	//    collection — guests don't have a gallery to come back to.
 	resultKey := fmt.Sprintf("generated_images/guest_%d.jpg", time.Now().UnixNano())
 	if _, err := utils.UploadFileToS3(r.Context(), bytes.NewReader(generated), resultKey, "image/jpeg"); err != nil {
-		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Failed to upload result: %v", err), http.StatusInternalServerError)
+		utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
+			"We generated your look but couldn't save it. Please try again.", err, http.StatusInternalServerError)
 		return
 	}
 	resultURL, _ := utils.GetPresignedURL(r.Context(), resultKey)
 
 	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
-		"result":     resultURL,
-		"is_guest":   true,
+		"result":   resultURL,
+		"is_guest": true,
 		"upsell": map[string]string{
 			"title":  "Save & get 4 more free try-ons",
 			"action": "signup",

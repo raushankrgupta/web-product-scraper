@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -16,7 +17,7 @@ import (
 func UploadProductHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
-		fmt.Println(logMessageBuilder.String())
+		utils.FlushLog(r.Context(), &logMessageBuilder)
 	}()
 	utils.AddToLogMessage(&logMessageBuilder, "[Upload Product API]")
 
@@ -59,7 +60,7 @@ func UploadProductHandler(w http.ResponseWriter, r *http.Request) {
 
 		_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"))
 		if err != nil {
-			fmt.Printf("Failed to upload %s: %v\n", filename, err)
+			slog.Info(fmt.Sprintf("Failed to upload %s: %v", filename, err))
 			continue
 		}
 		imagePaths = append(imagePaths, objectKey)
@@ -88,7 +89,8 @@ func UploadProductHandler(w http.ResponseWriter, r *http.Request) {
 
 	result, err := collection.InsertOne(ctx, product)
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Error saving to database: %v", err), http.StatusInternalServerError)
+		utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
+			"We couldn't save that product. Please try again.", err, http.StatusInternalServerError)
 		return
 	}
 	product.ID = result.InsertedID.(primitive.ObjectID)

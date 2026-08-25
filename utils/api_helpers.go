@@ -5,9 +5,11 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
-	"time"
+
+	"github.com/raushankrgupta/web-product-scraper/utils/alert"
 )
 
 // RespondJSON sends a JSON response with the given status code and payload.
@@ -16,7 +18,7 @@ func RespondJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		// Fallback error logging if encoding fails, though we can't write to w anymore if headers sent
-		fmt.Printf("Error encoding JSON response: %v\n", err)
+		slog.Info(fmt.Sprintf("Error encoding JSON response: %v", err))
 	}
 }
 
@@ -32,7 +34,7 @@ func RespondJSON(w http.ResponseWriter, status int, payload interface{}) {
 func RespondJSONWithETag(w http.ResponseWriter, r *http.Request, status int, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Printf("Error encoding JSON response: %v\n", err)
+		slog.Info(fmt.Sprintf("Error encoding JSON response: %v", err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -52,15 +54,50 @@ func RespondJSONWithETag(w http.ResponseWriter, r *http.Request, status int, pay
 	w.Write([]byte("\n"))
 }
 
-// RespondError sends a JSON error response and logs the error to the provided logger or stdout.
-// If logger is nil, it prints to stdout using fmt.Println.
+// RespondError sends a JSON error response and records the message.
+//
+// When a handler buffer is supplied the message joins that request's
+// narrative; when it is nil the message is emitted as its own structured
+// record. It used to be a bare fmt.Println, which is why `[Error] Quota
+// exceeded` appeared *before* the `[Virtual Try-On API]` header of its own
+// request in the production log — the direct print raced the deferred buffer
+// flush, and the two could not be correlated.
+//
+// NOTE: `message` is sent to the client verbatim. Never pass an upstream
+// error into it; use a classified, user-safe string and log the detail
+// separately.
 func RespondError(w http.ResponseWriter, logger *strings.Builder, message string, status int) {
 	if logger != nil {
 		AddToLogMessage(logger, message)
 	} else {
-		fmt.Println("[Error]", message)
+		slog.Warn(message, "status", status)
 	}
 	RespondJSON(w, status, map[string]string{"error": message})
+}
+
+// RespondInternalError handles a server-side failure: the real error is
+// logged and alerted, and the client gets `publicMsg` only.
+//
+// This exists because infrastructure errors are *verbose and specific* —
+// during smoke testing a failed upload returned an AWS access key id, a
+// bucket request id and an S3 host id straight to the client, and the
+// production log shows users being shown a Google AI Studio billing URL the
+// same way. The detail belongs in the log; the user needs a next action.
+func RespondInternalError(w http.ResponseWriter, r *http.Request, logger *strings.Builder,
+	component, publicMsg string, err error, status int) {
+
+	if logger != nil {
+		AddToLogMessage(logger, fmt.Sprintf("%s: %v", publicMsg, err))
+	}
+
+	ctx := context.Background()
+	if r != nil {
+		ctx = r.Context()
+	}
+	L(ctx).Error(publicMsg, "component", component, "error", err.Error())
+	alert.Errorf(component, publicMsg, err)
+
+	RespondJSON(w, status, map[string]string{"error": publicMsg})
 }
 
 // PresignImageURLs generates presigned URLs for a slice of image keys/URLs.
@@ -93,14 +130,4 @@ func PresignImageURLs(ctx context.Context, images []string) []string {
 		}
 	}
 	return presignedURLs
-}
-
-// LatencyMiddleware logs the duration of each request
-func LatencyMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		duration := time.Since(start)
-		fmt.Printf("[LATENCY] %s %s - %v\n", r.Method, r.URL.Path, duration)
-	})
 }

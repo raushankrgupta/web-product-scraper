@@ -3,6 +3,7 @@ package base
 import (
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -38,35 +39,35 @@ func (b *BaseScraper) FetchDocument(url string, validator func(*goquery.Document
 	doc, err := b.FetchDocumentHTTP(url)
 	if err == nil {
 		if validator(doc) {
-			fmt.Printf("[BaseScraper] HTTP Success: %s\n", url)
+			slog.Info(fmt.Sprintf("[BaseScraper] HTTP Success: %s", url))
 			return doc, nil
 		} else {
-			fmt.Printf("[BaseScraper] HTTP yielded invalid content (validator failed), trying fallbacks...\n")
+			slog.Info("[BaseScraper] HTTP yielded invalid content (validator failed), trying fallbacks...")
 		}
 	} else {
-		fmt.Printf("[BaseScraper] HTTP Failed: %v\n", err)
+		slog.Info(fmt.Sprintf("[BaseScraper] HTTP Failed: %v", err))
 	}
 
 	// Strategy 2: ChromeDP (Headless)
-	fmt.Printf("[BaseScraper] Trying ChromeDP: %s\n", url)
+	slog.Info(fmt.Sprintf("[BaseScraper] Trying ChromeDP: %s", url))
 	doc, err = b.FetchDocumentChromeDP(url)
 	if err == nil && validator(doc) {
-		fmt.Printf("[BaseScraper] ChromeDP Success\n")
+		slog.Info("[BaseScraper] ChromeDP Success")
 		return doc, nil
 	}
 	if err != nil {
-		fmt.Printf("[BaseScraper] ChromeDP Failed: %v\n", err)
+		slog.Info(fmt.Sprintf("[BaseScraper] ChromeDP Failed: %v", err))
 	}
 
 	// Strategy 3: Selenium (Full Browser)
-	fmt.Printf("[BaseScraper] Trying Selenium: %s\n", url)
+	slog.Info(fmt.Sprintf("[BaseScraper] Trying Selenium: %s", url))
 	doc, err = b.FetchDocumentSelenium(url)
 	if err == nil && validator(doc) {
-		fmt.Printf("[BaseScraper] Selenium Success\n")
+		slog.Info("[BaseScraper] Selenium Success")
 		return doc, nil
 	}
 	if err != nil {
-		fmt.Printf("[BaseScraper] Selenium Failed: %v\n", err)
+		slog.Info(fmt.Sprintf("[BaseScraper] Selenium Failed: %v", err))
 	}
 
 	return nil, fmt.Errorf("all strategies failed for %s", url)

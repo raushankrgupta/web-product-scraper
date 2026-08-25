@@ -19,5 +19,12 @@ jobs:
           script: |
             cd web-product-scraper
             git pull origin master
+            # Tag the currently-running image so a rollback is one command away
+            # if the new build misbehaves.
+            docker tag phikarnot/web-product-scraper:latest phikarnot/web-product-scraper:pre-$(date +%Y%m%d-%H%M%S) || true
+            export APP_VERSION=$(git rev-parse --short HEAD)
             docker compose up -d --build --remove-orphans
             docker image prune -f
+            # Give the container a moment, then confirm it is actually serving.
+            sleep 15
+            docker compose exec -T app wget -qO- http://localhost:8080/health || (echo "health check failed after deploy"; docker compose logs app --tail 50; exit 1)

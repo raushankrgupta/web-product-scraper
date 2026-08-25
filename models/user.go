@@ -24,12 +24,19 @@ type User struct {
 	Password          string             `bson:"password" json:"-"` // Password is not returned in JSON
 	DOB               string             `bson:"dob,omitempty" json:"dob,omitempty"`
 	Gender            string             `bson:"gender,omitempty" json:"gender,omitempty"`
-	Status            string             `bson:"status" json:"status"`        // pending, verified, active, deleted
+	Status            string             `bson:"status" json:"status"`                 // pending, verified, active, deleted
 	Plan              string             `bson:"plan,omitempty" json:"plan,omitempty"` // free | plus | pro | guest
-	VerificationToken string             `bson:"verification_token" json:"-"` // Token for email verification
-	OTP               string             `bson:"otp" json:"-"`                // OTP for email verification
+	VerificationToken string             `bson:"verification_token" json:"-"`          // Token for email verification
+	OTP               string             `bson:"otp" json:"-"`                         // OTP for email verification
 	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt         time.Time          `bson:"updated_at" json:"updated_at"`
+
+	// DeletedEmail preserves the original address when an account is
+	// soft-deleted. The live `email` field is renamed to a tombstone so the
+	// address is free for a genuine re-signup — leaving it in place created a
+	// permanent Google-login lockout.
+	DeletedEmail string    `bson:"deleted_email,omitempty" json:"-"`
+	DeletedAt    time.Time `bson:"deleted_at,omitempty" json:"-"`
 }
 
 // PlanOrDefault returns the user's plan, falling back to PlanFree for documents

@@ -3,6 +3,7 @@ package myntra_scraper
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"strings"
@@ -118,7 +119,7 @@ func normalizeMyntraURL(rawURL string) string {
 func (s *MyntraScraper) ScrapeProduct(rawURL string) (*models.Product, error) {
 	canonURL := normalizeMyntraURL(rawURL)
 	if canonURL != rawURL {
-		fmt.Printf("[MyntraScraper] canonicalised URL: %s -> %s\n", rawURL, canonURL)
+		slog.Info(fmt.Sprintf("[MyntraScraper] canonicalised URL: %s -> %s", rawURL, canonURL))
 	}
 	if extractMyntraProductID(canonURL) == "" {
 		return nil, fmt.Errorf("myntra: url is not a product page (no product id found in path): %s", canonURL)
@@ -137,10 +138,10 @@ func (s *MyntraScraper) ScrapeProduct(rawURL string) (*models.Product, error) {
 	// full PDP payload (name, price, all album images, description, etc.).
 	if jsonStr := extractMyxJSON(html); jsonStr != "" {
 		if err := populateFromMyxJSON(product, jsonStr); err != nil {
-			fmt.Printf("[MyntraScraper] window.__myx JSON parse failed: %v (len=%d)\n", err, len(jsonStr))
+			slog.Info(fmt.Sprintf("[MyntraScraper] window.__myx JSON parse failed: %v (len=%d)", err, len(jsonStr)))
 		}
 	} else {
-		fmt.Printf("[MyntraScraper] window.__myx JSON not found in HTML (len=%d)\n", len(html))
+		slog.Info(fmt.Sprintf("[MyntraScraper] window.__myx JSON not found in HTML (len=%d)", len(html)))
 	}
 
 	// Fallback: pull whatever we can from OG / Twitter / <title> tags. These

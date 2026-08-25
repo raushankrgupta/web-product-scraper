@@ -20,6 +20,7 @@ package myntra_scraper
 import (
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -71,11 +72,11 @@ func ScraperProxyURL() *url.URL {
 		cachedProxyRaw = raw
 		pu, err := url.Parse(raw)
 		if err != nil {
-			fmt.Printf("[MyntraScraper] SCRAPER_PROXY_URL invalid (%v); proxy disabled\n", err)
+			slog.Info(fmt.Sprintf("[MyntraScraper] SCRAPER_PROXY_URL invalid (%v); proxy disabled", err))
 			return
 		}
 		cachedProxyURL = pu
-		fmt.Printf("[MyntraScraper] proxy enabled (host=%s scheme=%s)\n", pu.Host, pu.Scheme)
+		slog.Info(fmt.Sprintf("[MyntraScraper] proxy enabled (host=%s scheme=%s)", pu.Host, pu.Scheme))
 	})
 	return cachedProxyURL
 }
@@ -180,11 +181,11 @@ func (b *baseScraper) FetchDocument(rawURL string, validator func(*goquery.Docum
 	doc, err := b.FetchDocumentHTTP(rawURL)
 	if err == nil {
 		if validator(doc) {
-			fmt.Printf("[MyntraScraper] HTTP Success: %s\n", rawURL)
+			slog.Info(fmt.Sprintf("[MyntraScraper] HTTP Success: %s", rawURL))
 			return doc, nil
 		}
 		bodyLen, titleText := inspectDoc(doc)
-		fmt.Printf("[MyntraScraper] HTTP yielded invalid content (validator failed) - bodyTextLen=%d title=%q url=%s\n", bodyLen, titleText, rawURL)
+		slog.Info(fmt.Sprintf("[MyntraScraper] HTTP yielded invalid content (validator failed) - bodyTextLen=%d title=%q url=%s", bodyLen, titleText, rawURL))
 
 		// If the response is the host's "you are blocked / site under
 		// maintenance" stub AND we have no proxy configured, the next
@@ -195,41 +196,41 @@ func (b *baseScraper) FetchDocument(rawURL string, validator func(*goquery.Docum
 			return nil, fmt.Errorf("scrape blocked by %s (server returned %q in %d bytes) - the host is rejecting this server's IP as datacenter/bot traffic; configure SCRAPER_PROXY_URL (residential proxy or scraping service) to fix", host, titleText, bodyLen)
 		}
 	} else {
-		fmt.Printf("[MyntraScraper] HTTP Failed: %v\n", err)
+		slog.Info(fmt.Sprintf("[MyntraScraper] HTTP Failed: %v", err))
 	}
 
 	// Strategy 2: ChromeDP (Headless)
-	fmt.Printf("[MyntraScraper] Trying ChromeDP: %s\n", rawURL)
+	slog.Info(fmt.Sprintf("[MyntraScraper] Trying ChromeDP: %s", rawURL))
 	doc, err = b.FetchDocumentChromeDP(rawURL)
 	if err == nil {
 		if validator(doc) {
-			fmt.Printf("[MyntraScraper] ChromeDP Success: %s\n", rawURL)
+			slog.Info(fmt.Sprintf("[MyntraScraper] ChromeDP Success: %s", rawURL))
 			return doc, nil
 		}
 		bodyLen, titleText := inspectDoc(doc)
-		fmt.Printf("[MyntraScraper] ChromeDP yielded invalid content (validator failed) - bodyTextLen=%d title=%q url=%s\n", bodyLen, titleText, rawURL)
+		slog.Info(fmt.Sprintf("[MyntraScraper] ChromeDP yielded invalid content (validator failed) - bodyTextLen=%d title=%q url=%s", bodyLen, titleText, rawURL))
 		if looksLikeIPBlock(doc) && ScraperProxyURL() == nil {
 			return nil, fmt.Errorf("scrape blocked by %s (ChromeDP also returned %q) - the host is rejecting this server's IP; configure SCRAPER_PROXY_URL to fix", host, titleText)
 		}
 	} else {
-		fmt.Printf("[MyntraScraper] ChromeDP Failed: %v\n", err)
+		slog.Info(fmt.Sprintf("[MyntraScraper] ChromeDP Failed: %v", err))
 	}
 
 	// Strategy 3: Selenium (Full Browser)
-	fmt.Printf("[MyntraScraper] Trying Selenium: %s\n", rawURL)
+	slog.Info(fmt.Sprintf("[MyntraScraper] Trying Selenium: %s", rawURL))
 	doc, err = b.FetchDocumentSelenium(rawURL)
 	if err == nil {
 		if validator(doc) {
-			fmt.Printf("[MyntraScraper] Selenium Success: %s\n", rawURL)
+			slog.Info(fmt.Sprintf("[MyntraScraper] Selenium Success: %s", rawURL))
 			return doc, nil
 		}
 		bodyLen, titleText := inspectDoc(doc)
-		fmt.Printf("[MyntraScraper] Selenium yielded invalid content (validator failed) - bodyTextLen=%d title=%q url=%s\n", bodyLen, titleText, rawURL)
+		slog.Info(fmt.Sprintf("[MyntraScraper] Selenium yielded invalid content (validator failed) - bodyTextLen=%d title=%q url=%s", bodyLen, titleText, rawURL))
 		if looksLikeIPBlock(doc) {
 			return nil, fmt.Errorf("scrape blocked by %s across all strategies (last seen: %q) - configure or rotate SCRAPER_PROXY_URL", host, titleText)
 		}
 	} else {
-		fmt.Printf("[MyntraScraper] Selenium Failed: %v\n", err)
+		slog.Info(fmt.Sprintf("[MyntraScraper] Selenium Failed: %v", err))
 	}
 
 	return nil, fmt.Errorf("all strategies failed for %s", rawURL)
