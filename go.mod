@@ -13,7 +13,7 @@ require (
 	github.com/google/generative-ai-go v0.20.1
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
-	github.com/sendgrid/sendgrid-go v3.16.1+incompatible
+	github.com/resend/resend-go/v4 v4.2.0
 	github.com/tebeka/selenium v0.9.9
 	go.mongodb.org/mongo-driver v1.17.6
 	golang.org/x/crypto v0.46.0
@@ -59,7 +59,6 @@ require (
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
-	github.com/sendgrid/rest v2.6.9+incompatible // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
