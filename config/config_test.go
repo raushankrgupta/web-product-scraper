@@ -144,3 +144,45 @@ func TestAllowedOriginsParsing(t *testing.T) {
 		}
 	})
 }
+
+// The offload path must default to exactly the previous behaviour — on when a
+// URL is configured, off when it isn't — so adding the flag cannot change how
+// an existing deployment scrapes until someone sets it deliberately.
+func TestServerBEnabledDefaults(t *testing.T) {
+	const url = "https://b.example.com/internal/scrape"
+
+	cases := []struct {
+		name    string
+		url     string
+		enabled string
+		want    bool
+	}{
+		{"url set, flag unset", url, "", true},
+		{"url unset, flag unset", "", "", false},
+		{"url set, explicitly off", url, "false", false},
+		{"url set, explicitly on", url, "true", true},
+		// Nothing to call: an enabled B with no URL is off, not a boot error.
+		{"no url, explicitly on", "", "true", false},
+		// A typo must not silently stand the scraper down.
+		{"url set, garbage flag", url, "yes-please", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withEnv(t, map[string]string{
+				"SERVER_B_SCRAPE_URL": tc.url,
+				"SERVER_B_ENABLED":    tc.enabled,
+			}, func() {
+				LoadConfig()
+				if ServerBEnabled != tc.want {
+					t.Errorf("ServerBEnabled = %v, want %v", ServerBEnabled, tc.want)
+				}
+				// The URL is kept on file either way — that is the point of
+				// having a separate switch.
+				if ServerBScrapeURL != tc.url {
+					t.Errorf("ServerBScrapeURL = %q, want %q", ServerBScrapeURL, tc.url)
+				}
+			})
+		})
+	}
+}

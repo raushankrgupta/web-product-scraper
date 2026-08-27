@@ -22,7 +22,9 @@ import (
 // afterwards. Both the Myntra path and guest try-on depended on it and both
 // were down, and nobody knew until a log dump six days later.
 //
-// A dead dependency should be known at boot, not on the first user request.
+// A dead dependency should be known at boot, not on the first user request —
+// and one we have deliberately switched off (SERVER_B_ENABLED=false) should
+// not be probed, alerted on, or counted against /health at all.
 
 var (
 	serverBMu      sync.RWMutex
@@ -37,11 +39,16 @@ var (
 var AppVersion = "dev"
 
 // checkServerB probes B's endpoint. A configured-but-unreachable B is an
-// error; an unconfigured B is simply "not in use" and healthy by definition
-// (scraping stays local, which is the documented fallback).
+// error; a B that is unconfigured *or* switched off via SERVER_B_ENABLED is
+// simply "not in use" and healthy by definition (scraping stays local, which
+// is the documented fallback). Only an offload path we are actually relying on
+// can be broken.
 func checkServerB(ctx context.Context) (bool, string) {
-	if config.ServerBScrapeURL == "" {
-		return true, "not configured (scraping locally)"
+	if !config.ServerBEnabled {
+		if config.ServerBScrapeURL == "" {
+			return true, "not configured (scraping locally)"
+		}
+		return true, "disabled (scraping locally)"
 	}
 
 	// An empty-URL probe: B rejects it as a bad request, which still proves
@@ -72,6 +79,21 @@ func ServerBHealthy() (bool, string) {
 // alerting only on a healthy↔unhealthy *transition* so a long outage is one
 // message rather than one per poll.
 func StartServerBHealthChecks(ctx context.Context) {
+	// A switched-off B is not a dependency. Record the state once and start
+	// no ticker: polling a host we have deliberately stood down only produces
+	// noise, and (when the URL is a dead quick tunnel) a DNS lookup every five
+	// minutes for as long as the process runs.
+	if !config.ServerBEnabled {
+		ok, reason := checkServerB(ctx)
+
+		serverBMu.Lock()
+		serverBHealthy, serverBReason, serverBChecked = ok, reason, time.Now()
+		serverBMu.Unlock()
+
+		slog.Info("server B offload path inactive", "reason", reason)
+		return
+	}
+
 	run := func() {
 		probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		ok, reason := checkServerB(probeCtx)
@@ -87,13 +109,11 @@ func StartServerBHealthChecks(ctx context.Context) {
 		}
 		if ok {
 			slog.Info("server B healthy", "reason", reason)
-			if config.ServerBScrapeURL != "" {
-				alert.Report(alert.Event{
-					Level: alert.LevelWarn, Component: "serverb",
-					Title:  "✅ server B reachable again",
-					Fields: map[string]string{"detail": reason},
-				})
-			}
+			alert.Report(alert.Event{
+				Level: alert.LevelWarn, Component: "serverb",
+				Title:  "✅ server B reachable again",
+				Fields: map[string]string{"detail": reason},
+			})
 			return
 		}
 		slog.Error("server B unreachable", "reason", reason, "url", config.ServerBScrapeURL)
@@ -157,14 +177,18 @@ func HealthHandler(w http.ResponseWriter, r *http.Request) {
 	sentN, droppedN, queued := alert.Stats()
 
 	body := map[string]interface{}{
-		"status":   "ok",
-		"version":  AppVersion,
-		"env":      config.Environment,
-		"uptime":   time.Since(bootTime).Round(time.Second).String(),
-		"mongo":    mongoOK,
-		"s3":       s3Status(),
-		"server_b": map[string]interface{}{"healthy": bOK, "detail": bReason},
-		"gemini":   utils.GeminiBreaker.Snapshot(),
+		"status":  "ok",
+		"version": AppVersion,
+		"env":     config.Environment,
+		"uptime":  time.Since(bootTime).Round(time.Second).String(),
+		"mongo":   mongoOK,
+		"s3":      s3Status(),
+		"server_b": map[string]interface{}{
+			"enabled": config.ServerBEnabled,
+			"healthy": bOK,
+			"detail":  bReason,
+		},
+		"gemini": utils.GeminiBreaker.Snapshot(),
 		"alerts": map[string]interface{}{
 			"enabled": alert.Enabled(),
 			"sent":    sentN,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,11 @@ import (
 // a second scrape while the first was still running.
 var serverBClient = &http.Client{Timeout: 90 * time.Second}
 
+// errServerBDisabled is returned instead of dialling when the offload path is
+// switched off. It is a normal operating state, not a failure: callers fall
+// back to scraping locally.
+var errServerBDisabled = errors.New("server B is disabled (SERVER_B_ENABLED=false)")
+
 // looksLikeKnownNonMyntraStore lets delegateToServerB classify direct store
 // URLs as "not Myntra" without paying for a redirect-following network
 // resolution on the hot path. Shortened/unknown links are still resolved.
@@ -35,11 +41,15 @@ func looksLikeKnownNonMyntraStore(rawURL string) bool {
 }
 
 // delegateToServerB reports whether productURL should be scraped on server B.
-// It returns false when SERVER_B_SCRAPE_URL is unset (so scraping stays local,
-// exactly as before) or when the URL is not a Myntra URL. Shortened/share
-// deeplinks are resolved once to classify them.
+// It returns false when the offload path is switched off — SERVER_B_ENABLED=false
+// or no SERVER_B_SCRAPE_URL — so scraping stays local, exactly as before, or
+// when the URL is not a Myntra URL. Shortened/share deeplinks are resolved once
+// to classify them.
+//
+// The disabled check comes first so a stood-down B costs nothing: no redirect
+// resolution, no DNS lookup against a hostname we already know is dead.
 func delegateToServerB(productURL string) bool {
-	if config.ServerBScrapeURL == "" {
+	if !config.ServerBEnabled {
 		return false
 	}
 	if myntra_scraper.IsMyntraURL(productURL) {
@@ -60,6 +70,13 @@ func delegateToServerB(productURL string) bool {
 // authenticated with the shared internal secret. persist=false asks B for an
 // ephemeral scrape (no DB/S3 write). The caller owns resp.Body.
 func callServerB(ctx context.Context, userID, productURL string, persist bool) (*http.Response, error) {
+	// Single choke point for the flag. delegateToServerB already gates the
+	// scrape path, but this guarantees no code path — present or future —
+	// can dial a B that operations have switched off.
+	if !config.ServerBEnabled {
+		return nil, errServerBDisabled
+	}
+
 	payload, err := json.Marshal(map[string]interface{}{
 		"user_id": userID,
 		"url":     productURL,

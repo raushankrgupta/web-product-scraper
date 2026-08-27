@@ -31,6 +31,17 @@ var (
 	// InternalAPISecret is sent to server B in the X-Internal-Secret header so
 	// B can verify the request came from this server. Must match B's value.
 	InternalAPISecret string
+	// ServerBEnabled is the master switch for the offload path. When false,
+	// every scrape runs locally on this server, B is never contacted, and the
+	// background health probe stops reporting it as a failed dependency.
+	//
+	// A configured URL is not the same as a usable one: in production this was
+	// a Cloudflare *quick tunnel* hostname, which is regenerated on every
+	// cloudflared restart and then stops resolving. The only way to stand the
+	// offload path down was to blank SERVER_B_SCRAPE_URL out of the
+	// environment, which also loses the URL. This flag turns the path off
+	// while keeping the configuration on file.
+	ServerBEnabled bool
 
 	// --- Telegram failure notifier (utils/alert) ---
 	//
@@ -55,6 +66,11 @@ var (
 	// against a 5-minute context. These budgets bound that.
 	GeminiTimeoutSecs      int
 	GeminiMultiTimeoutSecs int
+
+	// S3UploadTimeoutSecs bounds a *persist* upload — one that stores a
+	// result we have already paid to produce. It is deliberately independent
+	// of the request deadline; see api.persistCtx.
+	S3UploadTimeoutSecs int
 
 	// AllowedOrigins is the CORS allow-list. Empty means "*" (the previous
 	// behaviour), which is kept as the default so an unconfigured deployment
@@ -139,6 +155,14 @@ func LoadConfig() {
 	ServerBScrapeURL = strings.TrimSpace(os.Getenv("SERVER_B_SCRAPE_URL"))
 	InternalAPISecret = os.Getenv("INTERNAL_API_SECRET")
 
+	// Default preserves the previous behaviour exactly: on when a URL is
+	// configured, off when it is not. An explicitly enabled B with no URL is
+	// treated as off rather than as a boot error — there is nothing to call.
+	ServerBEnabled = envBool("SERVER_B_ENABLED", ServerBScrapeURL != "") && ServerBScrapeURL != ""
+	if !ServerBEnabled && ServerBScrapeURL != "" {
+		log.Println("[config] SERVER_B_ENABLED=false — scraping locally, server B will not be contacted")
+	}
+
 	TelegramBotToken = strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
 	TelegramChatID = strings.TrimSpace(os.Getenv("TELEGRAM_CHAT_ID"))
 	// Alerts are on by default *once credentials exist*, off otherwise.
@@ -161,6 +185,7 @@ func LoadConfig() {
 
 	GeminiTimeoutSecs = envInt("GEMINI_TIMEOUT_SECS", 45)
 	GeminiMultiTimeoutSecs = envInt("GEMINI_MULTI_TIMEOUT_SECS", 90)
+	S3UploadTimeoutSecs = envInt("S3_UPLOAD_TIMEOUT_SECS", 30)
 
 	AllowedOrigins = nil
 	for _, o := range strings.Split(os.Getenv("ALLOWED_ORIGINS"), ",") {

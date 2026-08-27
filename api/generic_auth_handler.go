@@ -572,12 +572,14 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	utils.AddToLogMessage(&logMessageBuilder, "[Delete Account API]")
 
 	// DELETE is the documented verb, but POST is accepted as an alias:
-	// several HTTP clients handle DELETE-with-body awkwardly, and the
-	// production log shows 10 GET requests to this path against a single
-	// successful DELETE. MethodGuard rejects everything else with a logged
-	// 405 instead of a silent 401.
+	// several HTTP clients handle DELETE-with-body awkwardly. GET never
+	// reaches here — DeleteAccountRoute sends it to the deletion page
+	// instead — so it belongs in the Allow header even though this handler
+	// does not serve it. MethodGuard rejects everything else upstream with a
+	// logged 405 instead of a silent 401; this check is defence in depth for
+	// anyone calling the handler directly.
 	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
-		w.Header().Set("Allow", "DELETE, POST")
+		w.Header().Set("Allow", "GET, DELETE, POST")
 		utils.RespondError(w, &logMessageBuilder, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
