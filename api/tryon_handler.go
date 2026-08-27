@@ -31,6 +31,24 @@ func geminiMultiTimeout() time.Duration {
 	return time.Duration(config.GeminiMultiTimeoutSecs) * time.Second
 }
 
+// persistCtx returns the context for storing a result we have already paid to
+// produce, plus its cancel func. The caller must defer the cancel.
+//
+// It is deliberately rooted at context.Background() rather than at the
+// request. The only HTTP 500 in the production log was a 666 KB image that
+// Gemini spent 21.5s generating and that PutObject then threw away with
+// "context canceled": the client had hung up, the request context died, and
+// the upload inherited it. Try-ons in that log routinely ran 19–34 seconds,
+// with client and proxy timeouts sitting comfortably inside that range, so a
+// caller walking away mid-generation is the normal case, not the rare one.
+//
+// Once the bytes exist they get stored whether or not anyone is still
+// listening — the user's gallery is the point, not the response. The deadline
+// is its own budget so a hung S3 call still can't leak the goroutine.
+func persistCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), time.Duration(config.S3UploadTimeoutSecs)*time.Second)
+}
+
 // respondGenError logs the real error, alerts on it, and returns the
 // classified, user-safe message. Never hand genErr.Error() to a client.
 //
@@ -267,8 +285,12 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	fileName := fmt.Sprintf("generated_tryon_%d.jpg", time.Now().UnixNano())
 	objectKey := fmt.Sprintf("generated_images/%s", fileName)
 
-	// generatedContent is []byte
-	_, err = utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	// generatedContent is []byte. Stored on persistCtx, not r.Context() — see
+	// persistCtx for why a finished generation must outlive its request.
+	uploadCtx, cancelUpload := persistCtx()
+	defer cancelUpload()
+
+	_, err = utils.UploadFileToS3(uploadCtx, bytes.NewReader(generatedContent), objectKey, "image/jpeg")
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err))
 		alert.Errorf("s3", "generated image upload failed", err)
@@ -517,7 +539,10 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 	fileName := fmt.Sprintf("generated_tryon_%s_%d.jpg", tryOnType, time.Now().UnixNano())
 	objectKey := fmt.Sprintf("generated_images/%s", fileName)
 
-	_, err = utils.UploadFileToS3(r.Context(), bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	uploadCtx, cancelUpload := persistCtx()
+	defer cancelUpload()
+
+	_, err = utils.UploadFileToS3(uploadCtx, bytes.NewReader(generatedContent), objectKey, "image/jpeg")
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err))
 		alert.Errorf("s3", "generated image upload failed", err, "type", tryOnType)

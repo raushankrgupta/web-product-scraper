@@ -1,6 +1,7 @@
 User-agent: *
 Allow: /
 
+Allow: /auth/delete-account
 Disallow: /auth/
 Disallow: /persons
 Disallow: /persons/

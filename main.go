@@ -199,11 +199,16 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/auth/forgot-password", guard(post, http.HandlerFunc(api.ForgotPasswordHandler)))
 	mux.Handle("/auth/reset-password", guard(post, http.HandlerFunc(api.ResetPasswordHandler)))
 	mux.Handle("/auth/change-password", guard(post, api.AuthMiddleware(http.HandlerFunc(api.ChangePasswordHandler))))
-	// DELETE is canonical; POST is accepted because DELETE-with-body is
-	// awkward in several HTTP clients and is a plausible root cause of the
-	// GET requests seen against this path in production.
-	mux.Handle("/auth/delete-account", guard([]string{http.MethodDelete, http.MethodPost},
-		api.AuthMiddleware(http.HandlerFunc(api.DeleteAccountHandler))))
+	// One URL, two audiences. GET/HEAD serve the human-facing deletion page
+	// that Google Play's Data Safety review crawls — it was getting a 405 on
+	// every crawl, which fails a review quietly and weeks later. DELETE is the
+	// canonical API verb; POST is accepted because DELETE-with-body is awkward
+	// in several HTTP clients. Auth is applied inside DeleteAccountRoute, on
+	// the API branch only: the instructions page has to be readable by a
+	// reviewer, and by a user who can no longer sign in.
+	mux.Handle("/auth/delete-account", guard(
+		[]string{http.MethodGet, http.MethodHead, http.MethodDelete, http.MethodPost},
+		api.DeleteAccountRoute()))
 
 	// Billing / quota.
 	mux.Handle("/billing/status", guard(get, api.AuthMiddleware(http.HandlerFunc(api.BillingStatusHandler))))

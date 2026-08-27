@@ -202,7 +202,14 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	// 4. Upload result + return presigned URL. Don't write to the tryons
 	//    collection — guests don't have a gallery to come back to.
 	resultKey := fmt.Sprintf("generated_images/guest_%d.jpg", time.Now().UnixNano())
-	if _, err := utils.UploadFileToS3(r.Context(), bytes.NewReader(generated), resultKey, "image/jpeg"); err != nil {
+
+	// persistCtx, not r.Context(): the generation is already paid for by the
+	// time we get here, so a caller who hung up during those 20-odd seconds
+	// must not be able to cancel the upload out from under it. See persistCtx.
+	uploadCtx, cancelUpload := persistCtx()
+	defer cancelUpload()
+
+	if _, err := utils.UploadFileToS3(uploadCtx, bytes.NewReader(generated), resultKey, "image/jpeg"); err != nil {
 		utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
 			"We generated your look but couldn't save it. Please try again.", err, http.StatusInternalServerError)
 		return
