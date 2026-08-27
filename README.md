@@ -12,7 +12,7 @@ Backend API server for the TryOnFusion virtual try-on platform. Built with Go, t
 | Object Storage | AWS S3 |
 | AI Image Generation | Google Gemini |
 | Authentication | JWT + Google OAuth |
-| Email Service | SendGrid |
+| Email Service | Resend |
 | Web Scraping | goquery, chromedp, Selenium |
 | Reverse Proxy | Caddy |
 | Containerization | Docker, Docker Compose |
@@ -67,7 +67,7 @@ web-product-scraper/
 │   ├── mongo.go             # MongoDB connection
 │   ├── s3.go                # AWS S3 operations
 │   ├── token.go             # JWT generation/validation
-│   ├── email.go             # SendGrid email
+│   ├── email.go             # Resend email
 │   ├── gemini_client.go     # Gemini AI integration
 │   ├── downloader.go        # Image downloader
 │   ├── url_helper.go        # URL resolution
@@ -89,7 +89,7 @@ web-product-scraper/
 - MongoDB (local or Atlas)
 - AWS account with S3 bucket
 - Google Cloud project with Gemini API enabled
-- SendGrid account for transactional emails
+- Resend account with a verified sending domain, for transactional emails
 - Chromium & ChromeDriver (for scraping; included in Docker image)
 
 ## Environment Variables
@@ -119,7 +119,8 @@ AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
 
 # Email
-SENDGRID_API_KEY=your_sendgrid_api_key
+RESEND_API_KEY=your_resend_api_key
+EMAIL_FROM="TryOnFusion App <no-reply@tryonfusion.com>"
 
 # Contact
 CONTACT_EMAIL=support@tryonfusion.com
