@@ -1,0 +1,156 @@
+{
+  "_readme": [
+    "Star economy configuration — the single source of truth for what a",
+    "generation costs, what a star costs, and what new users get for free.",
+    "",
+    "This file is embedded into the binary at build time (config/stars.go),",
+    "so a deploy always ships a valid config. To override without rebuilding,",
+    "set STARS_CONFIG_PATH to an external JSON file with the same shape.",
+    "",
+    "BEFORE CHANGING PRICES, READ 'economics' BELOW. The invariant that keeps",
+    "this business solvent is: stars_charged * min_star_value_inr * (1 - play_fee)",
+    "must exceed est_cost_usd * usd_inr by a healthy margin. Validate with:",
+    "    go run ./tools/stars_check",
+    "which fails loudly on any tier that is priced below its floor."
+  ],
+  "version": 3,
+  "updated_at": "2026-08-31",
+  "currency": "INR",
+  "economics": {
+    "_note": [
+      "Assumptions used by the margin checker. These are ESTIMATES — replace",
+      "est_cost_usd with your real per-image cost from the Google AI Studio /",
+      "Vertex billing console (last month's image spend divided by the number",
+      "of successful generations). Everything else is arithmetic."
+    ],
+    "usd_inr": 88,
+    "play_service_fee_pct": 15,
+    "min_margin_multiple": 1.25,
+    "target_margin_multiple": 2,
+    "_margin_note": [
+      "Both multiples compare NET revenue (after Play's service fee) against",
+      "raw model cost, evaluated at the CHEAPEST star rate — what a customer",
+      "on the biggest pack pays. That is the worst case for us.",
+      "",
+      "min_margin_multiple is a hard floor: tools/stars_check exits non-zero",
+      "below it, so CI blocks a repricing that leaves nothing for infra and",
+      "refunded failures. 1.25x means a generation that fails and gets",
+      "refunded roughly 20% of the time still breaks even.",
+      "",
+      "target_margin_multiple is advisory: below it you get a warning, not a",
+      "failure. 2.0x is where a tier stops being fragile.",
+      "",
+      "Current thin tier: individual/pro sits at ~1.44x. It clears the floor",
+      "but is the first thing to reprice if Gemini costs rise. Lever: raise",
+      "tiers.individual.pro from 25 to 35 stars for a comfortable 2.0x."
+    ]
+  },
+  "models": {
+    "_note": "Keys are the 'quality' values the API accepts. gemini_model is the literal model id sent to Google — update here, never in Go source.",
+    "flash": {
+      "label": "Standard",
+      "tagline": "Fast · about 20 seconds",
+      "gemini_model": "gemini-2.5-flash-image",
+      "est_cost_usd": 0.039,
+      "timeout_secs": 45,
+      "multi_timeout_secs": 90
+    },
+    "pro": {
+      "label": "Pro",
+      "tagline": "Sharper detail · about 35 seconds",
+      "gemini_model": "gemini-3-pro-image-preview",
+      "est_cost_usd": 0.134,
+      "timeout_secs": 90,
+      "multi_timeout_secs": 150
+    }
+  },
+  "default_quality": "flash",
+  "tiers": {
+    "_note": "Star cost per generation, keyed by try-on type then quality. Every type here must exist as a route; every quality must exist in 'models'.",
+    "individual": {
+      "flash": 10,
+      "pro": 25
+    },
+    "couple": {
+      "flash": 14,
+      "pro": 30
+    },
+    "group": {
+      "flash": 18,
+      "pro": 36
+    }
+  },
+  "packs": [
+    {
+      "_note": "product_id MUST match the in-app product id created in Play Console exactly. Changing it after launch orphans the SKU.",
+      "product_id": "stars_40",
+      "stars": 40,
+      "price_inr": 49,
+      "label": "Starter",
+      "badge": ""
+    },
+    {
+      "product_id": "stars_150",
+      "stars": 150,
+      "price_inr": 149,
+      "label": "Popular",
+      "badge": "MOST POPULAR"
+    },
+    {
+      "product_id": "stars_450",
+      "stars": 450,
+      "price_inr": 399,
+      "label": "Value",
+      "badge": "BEST VALUE"
+    },
+    {
+      "product_id": "stars_1000",
+      "stars": 1000,
+      "price_inr": 799,
+      "label": "Mega",
+      "badge": ""
+    }
+  ],
+  "free": {
+    "_note": [
+      "Free entitlements are NOT stars. They are a separate counter that can",
+      "only be spent on free_quality generations of a free_types kind, so a",
+      "welcome bonus can never be cashed out against an expensive Pro render.",
+      "",
+      "Spend order is fixed: daily_free first (it expires at midnight UTC",
+      "anyway), then welcome credits (never expire), then purchased stars."
+    ],
+    "welcome_credits": 5,
+    "returning_welcome_credits": 1,
+    "_returning_note": "Applied when the signup email has been seen before (see identity.*). Deleting an account and re-registering therefore yields 1, not 5.",
+    "daily_free_count": 1,
+    "guest_daily_free_count": 1,
+    "free_quality": "flash",
+    "free_types": [
+      "individual"
+    ],
+    "_free_types_note": "Free entitlements only cover these try-on types. couple/group always cost stars.",
+    "suppress_when_affordable": true,
+    "_suppress_note": "When true, a user holding enough stars to afford the cheapest generation gets no free entitlements. The threshold is computed from 'tiers', not hardcoded, so it stays correct when you reprice. Free usage resumes automatically once the balance drops below it."
+  },
+  "identity": {
+    "_note": [
+      "Returning-user detection. We store a SHA-256 of the normalised email",
+      "plus a server-side pepper (STARS_IDENTITY_PEPPER) — never the address",
+      "itself — so the record survives account deletion without retaining",
+      "readable personal data. Disclose this in your privacy policy under",
+      "'fraud prevention'."
+    ],
+    "enabled": true,
+    "normalise_gmail_dots": true,
+    "_normalise_note": "Treats r.k.gupta@gmail.com, rkgupta@gmail.com and rkgupta+anything@gmail.com as one identity, and folds googlemail.com into gmail.com. Google genuinely routes all of those to a single inbox, so counting them as separate users turns the welcome bonus into a free vending machine. Applied to gmail.com / googlemail.com only — dot-insensitivity is not safe to assume for other providers."
+  },
+  "billing": {
+    "_note": "Google Play consumable purchase handling.",
+    "package_name": "com.raushan26.tryonfusion",
+    "acknowledge_window_hours": 72,
+    "_acknowledge_note": "Play auto-refunds a purchase that is not acknowledged/consumed within 3 days. We consume immediately on credit; this value only drives the staleness alert.",
+    "hold_expiry_minutes": 5,
+    "_hold_note": "A reserved-but-uncommitted spend older than this is swept back to the user's balance. Must exceed the longest generation timeout above."
+  }
+}

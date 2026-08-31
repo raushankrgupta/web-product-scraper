@@ -18,8 +18,16 @@ import (
 	"google.golang.org/api/option"
 )
 
-// geminiModelName is the image-generation model every try-on path uses.
-const geminiModelName = "gemini-3-pro-image-preview"
+// imageModel pairs a configured Gemini model with the name it was built from.
+// genai.GenerativeModel keeps its model name unexported, and every log line,
+// alert and breaker record here needs to say which model produced the result —
+// with two quality tiers in play, "generation failed" is not actionable
+// without knowing whether it was the cheap one or the expensive one.
+type imageModel struct {
+	*genai.GenerativeModel
+	Name    string // literal Gemini model id, e.g. gemini-2.5-flash-image
+	Quality string // config key, e.g. flash | pro
+}
 
 var (
 	geminiOnce   sync.Once
@@ -53,14 +61,22 @@ func getGeminiClient(ctx context.Context) (*genai.Client, error) {
 // goes through here so nobody can accidentally ship a path without
 // SafetySettings again — the legacy /try-on generator did exactly that, and
 // all four "no content generated" failures in the production log came from it.
-func newImageModel(ctx context.Context) (*genai.GenerativeModel, error) {
+func newImageModel(ctx context.Context, quality string) (*imageModel, error) {
 	client, err := getGeminiClient(ctx)
 	if err != nil {
 		return nil, err
 	}
-	model := client.GenerativeModel(geminiModelName)
-	model.SafetySettings = permissiveSafetySettings()
-	return model, nil
+	// Resolving through the star config is what keeps the model a pricing
+	// decision rather than a source-code constant: config/stars.json maps a
+	// quality tier to both its star cost and its model id, so the two can
+	// never drift apart. An unrecognised quality resolves down to the default
+	// tier, never up — a bad request must not silently buy the expensive model.
+	quality = config.Stars.NormaliseQuality(quality)
+	name := config.Stars.GeminiModelFor(quality)
+
+	m := client.GenerativeModel(name)
+	m.SafetySettings = permissiveSafetySettings()
+	return &imageModel{GenerativeModel: m, Name: name, Quality: quality}, nil
 }
 
 // CloseGemini releases the shared client on shutdown.
@@ -105,7 +121,7 @@ func permissiveSafetySettings() []*genai.SafetySetting {
 //
 // The error message preserves "blocked" so callers can branch on it for
 // user-facing messages.
-func runGemini(ctx context.Context, model *genai.GenerativeModel, label string, parts []genai.Part, retryParts func() []genai.Part) ([]byte, error) {
+func runGemini(ctx context.Context, model *imageModel, label string, parts []genai.Part, retryParts func() []genai.Part) ([]byte, error) {
 	out, err := callGemini(ctx, model, label, parts)
 	if err == nil {
 		return out, nil
@@ -132,7 +148,7 @@ func formatRatings(ratings []*genai.SafetyRating) string {
 	return strings.Join(out, ", ")
 }
 
-func callGemini(ctx context.Context, model *genai.GenerativeModel, label string, parts []genai.Part) ([]byte, error) {
+func callGemini(ctx context.Context, model *imageModel, label string, parts []genai.Part) ([]byte, error) {
 	start := time.Now()
 	resp, err := model.GenerateContent(ctx, parts...)
 	if err != nil {
@@ -150,16 +166,16 @@ func callGemini(ctx context.Context, model *genai.GenerativeModel, label string,
 				slog.Warn("gemini candidate blocked", "label", label, "finish_reason", finish)
 			}
 			alert.Errorf("gemini", "generation blocked", err,
-				"label", label, "model", geminiModelName,
+				"label", label, "model", model.Name,
 				"block_reason", blockReason, "finish_reason", finish, "safety", ratings)
 			return nil, fmt.Errorf("failed to generate content: %v", err)
 		}
 
-		reportUpstreamError(label, err, time.Since(start))
+		reportUpstreamError(label, model.Name, model.Quality, err, time.Since(start))
 		return nil, fmt.Errorf("failed to generate content: %v", err)
 	}
 
-	out, err := extractImage(resp, label, time.Since(start))
+	out, err := extractImage(resp, label, model.Name, time.Since(start))
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +187,7 @@ func callGemini(ctx context.Context, model *genai.GenerativeModel, label string,
 //
 // Split out from callGemini so the blocked-response shapes — which are the
 // hard ones to reproduce against the live API — are unit-testable.
-func extractImage(resp *genai.GenerateContentResponse, label string, took time.Duration) ([]byte, error) {
+func extractImage(resp *genai.GenerateContentResponse, label, modelName string, took time.Duration) ([]byte, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("no content generated (nil response)")
 	}
@@ -189,7 +205,7 @@ func extractImage(resp *genai.GenerateContentResponse, label string, took time.D
 		slog.Error("gemini prompt blocked — no candidates",
 			"label", label, "block_reason", reason, "safety", ratings)
 		alert.Errorf("gemini", "prompt blocked — no candidates", nil,
-			"label", label, "model", geminiModelName,
+			"label", label, "model", modelName,
 			"block_reason", reason, "safety", ratings)
 		return nil, fmt.Errorf("no content generated (prompt blocked: %s)", reason)
 	}
@@ -209,7 +225,7 @@ func extractImage(resp *genai.GenerateContentResponse, label string, took time.D
 		slog.Error("gemini candidate blocked — no parts",
 			"label", label, "finish_reason", finish, "safety", ratings)
 		alert.Errorf("gemini", "candidate blocked — no parts", nil,
-			"label", label, "model", geminiModelName,
+			"label", label, "model", modelName,
 			"finish_reason", finish, "safety", ratings)
 		return nil, fmt.Errorf("no content generated (blocked, finish_reason=%s)", finish)
 	}
@@ -232,7 +248,7 @@ func extractImage(resp *genai.GenerateContentResponse, label string, took time.D
 			}
 			slog.Error("gemini returned TEXT, expected an image", "label", label, "preview", preview)
 			alert.Errorf("gemini", "model returned TEXT, expected image", nil,
-				"label", label, "model", geminiModelName, "preview", preview)
+				"label", label, "model", modelName, "preview", preview)
 			return nil, fmt.Errorf("model returned text instead of an image: %s", preview)
 
 		default:
@@ -251,7 +267,7 @@ func extractImage(resp *genai.GenerateContentResponse, label string, took time.D
 // accordingly. Quota/credit exhaustion is FATAL (it means every try-on is
 // dead until someone pays) and also trips the circuit breaker so we stop
 // paying for calls that cannot succeed.
-func reportUpstreamError(label string, err error, took time.Duration) {
+func reportUpstreamError(label, modelName, quality string, err error, took time.Duration) {
 	switch {
 	case IsQuotaError(err):
 		GeminiBreaker.RecordQuotaFailure()
@@ -261,15 +277,15 @@ func reportUpstreamError(label string, err error, took time.Duration) {
 			Title:     "quota / credits exhausted",
 			Err:       err,
 			Latency:   took,
-			Fields:    map[string]string{"label": label, "model": geminiModelName},
+			Fields:    map[string]string{"label": label, "model": modelName, "quality": quality},
 		})
 	case isTimeoutError(err):
 		alert.Errorf("gemini", "generation timed out", err,
-			"label", label, "model", geminiModelName, "took", took.Round(time.Millisecond).String())
+			"label", label, "model", modelName, "took", took.Round(time.Millisecond).String())
 	default:
 		GeminiBreaker.RecordFailure()
 		alert.Errorf("gemini", "generation failed", err,
-			"label", label, "model", geminiModelName)
+			"label", label, "model", modelName)
 	}
 }
 
@@ -471,19 +487,19 @@ type PersonTryOnData struct {
 
 // GenerateMultiPersonTryOnImage generates a multi-person virtual try-on image using Gemini.
 // `themeReferenceURL` is accepted but ignored (kept for caller signature parity).
-func GenerateMultiPersonTryOnImage(ctx context.Context, tryOnType string, themeImageURL, _, themeDescription string, people []PersonTryOnData) ([]byte, error) {
-	return generateMultiPersonTryOn(ctx, tryOnType+" try-on", themeImageURL, themeDescription, people)
+func GenerateMultiPersonTryOnImage(ctx context.Context, tryOnType string, themeImageURL, _, themeDescription string, people []PersonTryOnData, quality string) ([]byte, error) {
+	return generateMultiPersonTryOn(ctx, tryOnType+" try-on", themeImageURL, themeDescription, people, quality)
 }
 
 // GenerateCoupleTryOnImage generates a virtual try-on image specifically structured for exactly 2 people (a couple).
-func GenerateCoupleTryOnImage(ctx context.Context, themeImageURL, themeDescription string, people []PersonTryOnData) ([]byte, error) {
+func GenerateCoupleTryOnImage(ctx context.Context, themeImageURL, themeDescription string, people []PersonTryOnData, quality string) ([]byte, error) {
 	if len(people) != 2 {
 		return nil, fmt.Errorf("GenerateCoupleTryOnImage requires exactly 2 people")
 	}
-	return generateMultiPersonTryOn(ctx, "couple try-on", themeImageURL, themeDescription, people)
+	return generateMultiPersonTryOn(ctx, "couple try-on", themeImageURL, themeDescription, people, quality)
 }
 
-func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDescription string, people []PersonTryOnData) ([]byte, error) {
+func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDescription string, people []PersonTryOnData, quality string) ([]byte, error) {
 	if config.GeminiAPIKey == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
 	}
@@ -494,7 +510,7 @@ func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDe
 		return nil, err
 	}
 
-	model, err := newImageModel(ctx)
+	model, err := newImageModel(ctx, quality)
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +620,7 @@ func generateMultiPersonTryOn(ctx context.Context, label, themeImageURL, themeDe
 }
 
 // GenerateIndividualTryOnImage generates a virtual try-on image specifically structured for exactly 1 person.
-func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescription string, person PersonTryOnData) ([]byte, error) {
+func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescription string, person PersonTryOnData, quality string) ([]byte, error) {
 	if config.GeminiAPIKey == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
 	}
@@ -612,7 +628,7 @@ func GenerateIndividualTryOnImage(ctx context.Context, themeImageURL, themeDescr
 		return nil, err
 	}
 
-	model, err := newImageModel(ctx)
+	model, err := newImageModel(ctx, quality)
 	if err != nil {
 		return nil, err
 	}

@@ -319,6 +319,13 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 
 	utils.AddToLogMessage(&logMessageBuilder, "OTP verified successfully")
 
+	// The account only becomes usable here, so this is where the welcome
+	// credits are issued. grantSignupBonus also records the email identity,
+	// which is what downgrades the bonus for an address that has registered
+	// before — deleting an account and signing up again is therefore worth
+	// the returning grant, not a fresh full one.
+	grantSignupBonus(user.ID.Hex(), user.Email, &logMessageBuilder)
+
 	if req.Mode == "signup" {
 		// Generate JWT Token
 		token, err := utils.GenerateToken(user.ID.Hex())
@@ -607,6 +614,12 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Record the deletion against the email identity and clear the star
+	// balance before the address is tombstoned — `existing.Email` still holds
+	// the real address at this point, and it is the input the identity hash
+	// is derived from.
+	releaseSignupIdentity(userIdStr, existing.Email, &logMessageBuilder)
+
 	// Soft delete: status -> 'deleted', stamp deleted_at, and rename the
 	// email to a tombstone address so the original is free for a genuine
 	// re-signup (via Google *or* email/password) while the audit trail is
@@ -749,6 +762,7 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			user.ID = res.InsertedID.(primitive.ObjectID)
 			utils.AddToLogMessage(&logMessageBuilder, "New user registered via Google")
+			grantSignupBonus(user.ID.Hex(), user.Email, &logMessageBuilder)
 		} else {
 			utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
 				"Something went wrong on our end. Please try again.", err, http.StatusInternalServerError)
@@ -783,6 +797,10 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			user.ID = res.InsertedID.(primitive.ObjectID)
+			// A fresh account over a deleted one. The identity record
+			// survived the deletion, so this grant is the smaller returning
+			// one rather than the full welcome bonus.
+			grantSignupBonus(user.ID.Hex(), user.Email, &logMessageBuilder)
 		} else if user.Status == "pending" {
 			// If they were pending, Google login verifies them
 			if _, err := collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"status": "active"}}); err != nil {

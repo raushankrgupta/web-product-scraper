@@ -19,9 +19,9 @@ import (
 
 // The production log shows 30 /try-on requests covering 11 unique
 // (person, product) pairs — 2.7 attempts each, with one pair retried six
-// times. QuotaMiddleware only bumps the counter on a 2xx, which is the right
-// call for fairness but leaves *failed* generations completely uncapped. With
-// credits restored that behaviour is a direct 2.7× bill multiplier.
+// times. Billing only charges for a 2xx, which is the right call for
+// fairness but leaves *failed* generations completely uncapped. That is a
+// direct 2.7× bill multiplier on an upstream we pay per call.
 //
 // This file adds three cheap guards in front of the generation call:
 //
@@ -177,7 +177,7 @@ func (f *failureTracker) Clear(userID string) {
 
 // ------------------------------------------------------------------ middleware
 
-// TryOnGuardMiddleware sits between AuthMiddleware and QuotaMiddleware. It
+// TryOnGuardMiddleware sits between AuthMiddleware and StarGateMiddleware. It
 // rejects duplicate in-flight requests and users in a failure loop before
 // either one can reach a paid upstream call.
 func TryOnGuardMiddleware(next http.Handler) http.Handler {

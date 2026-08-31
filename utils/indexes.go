@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/raushankrgupta/web-product-scraper/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -31,11 +32,6 @@ func EnsureIndexes(ctx context.Context, dbName string) {
 		{"wardrobe", mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}}},
 		// Gallery listing, newest first.
 		{"tryons", mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}}},
-		// Quota lookup runs on every try-on request, before the handler.
-		{"tryon_quota", mongo.IndexModel{
-			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "date", Value: 1}},
-			Options: options.Index().SetUnique(true),
-		}},
 		// Login/signup/Google-login all look users up by email. Unique is the
 		// structural guarantee behind the deleted-account tombstone rename:
 		// two live rows must never share an address.
@@ -45,6 +41,39 @@ func EnsureIndexes(ctx context.Context, dbName string) {
 		}},
 		// Powers the "which domains can't we scrape" digest.
 		{"products", mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: -1}}}},
+
+		// --- Star economy ---
+		//
+		// The ledger is read newest-first per user for the in-app history.
+		{models.CollStarLedger, mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// A Play purchase token may appear in the ledger exactly once. This
+		// unique partial index is the structural guarantee that a purchase
+		// cannot be credited twice — not a code path someone has to remember
+		// to write. Partial because spend rows carry no token, and a plain
+		// unique index would collapse them all onto a single null key.
+		{models.CollStarLedger, mongo.IndexModel{
+			Keys: bson.D{{Key: "purchase_token", Value: 1}},
+			Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+				bson.M{"purchase_token": bson.M{"$exists": true, "$type": "string"}}),
+		}},
+		// One row per Play purchase token.
+		{models.CollStarPurchases, mongo.IndexModel{
+			Keys:    bson.D{{Key: "purchase_token", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		}},
+		// The reconciler scans by state.
+		{models.CollStarPurchases, mongo.IndexModel{
+			Keys: bson.D{{Key: "state", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// The hold sweeper scans for holds older than the expiry window.
+		{models.CollStarBalances, mongo.IndexModel{Keys: bson.D{{Key: "held.at", Value: 1}}}},
+		// Returning-user detection looks up exactly one hash per signup.
+		{models.CollSignupIdentities, mongo.IndexModel{
+			Keys:    bson.D{{Key: "email_hash", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		}},
 	}
 
 	for _, s := range specs {

@@ -16,7 +16,7 @@ import (
 // GuestTryOnHandler runs a one-shot try-on for an anonymous (guest) user
 // without persisting a person/product to MongoDB. It's the minimum-friction
 // funnel entry point — the user uploads a photo + drops a product link, and
-// gets the result image back. The QuotaMiddleware caps this at 1/day per
+// gets the result image back. StarGateMiddleware caps this at 1/day per
 // device (PlanGuest).
 //
 // Multipart fields:
@@ -178,7 +178,11 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	//    image-gen safety classifier).
 	personDetails := strings.TrimSpace(r.FormValue("person_details"))
 
-	geminiCtx, cancel := context.WithTimeout(context.Background(), geminiTimeout())
+	// Guests are pinned to the free quality tier by StarGateMiddleware; read
+	// it back rather than assuming, so a config change moves this too.
+	quality := GetQualityFromContext(r.Context())
+
+	geminiCtx, cancel := context.WithTimeout(context.Background(), geminiTimeout(quality))
 	defer cancel()
 
 	genStart := time.Now()
@@ -186,7 +190,7 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		Details:        personDetails,
 		PersonImageURL: personImageURL,
 		TopURL:         productImageURLs,
-	})
+	}, quality)
 	if err != nil {
 		// Shared classifier so guest and signed-in try-on report the same
 		// status codes for the same upstream failure. The safety-block copy

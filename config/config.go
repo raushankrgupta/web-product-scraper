@@ -72,6 +72,30 @@ var (
 	// of the request deadline; see api.persistCtx.
 	S3UploadTimeoutSecs int
 
+	// --- Google Play billing (star purchases) ---
+	//
+	// Exactly one of these supplies the service-account credentials used to
+	// verify purchase tokens. JSON is the deployment-friendly form: the whole
+	// key sits in one env var, so nothing has to be mounted into the
+	// container. When neither is set, purchase verification is disabled and
+	// /billing/purchase refuses every request — refusing is the only safe
+	// default, because crediting an unverified token is free stars for
+	// anyone who can POST.
+	PlayServiceAccountJSON string
+	PlayServiceAccountFile string
+
+	// PlayRTDNToken is a shared secret appended to the Pub/Sub push endpoint
+	// as ?token=... . Google will happily push to any public URL, so without
+	// it anyone who finds the endpoint can forge a refund notification.
+	PlayRTDNToken string
+
+	// StarsIdentityPepper salts the SHA-256 of an email address before it is
+	// stored for returning-user detection. Without a pepper the hashes are a
+	// plain dictionary of every address that ever signed up; with one, the
+	// stored value is useless to anyone who does not also hold this secret.
+	// Changing it resets everyone to "new user" — treat it as permanent.
+	StarsIdentityPepper string
+
 	// AllowedOrigins is the CORS allow-list. Empty means "*" (the previous
 	// behaviour), which is kept as the default so an unconfigured deployment
 	// doesn't suddenly break the mobile app.
@@ -186,6 +210,21 @@ func LoadConfig() {
 	GeminiTimeoutSecs = envInt("GEMINI_TIMEOUT_SECS", 45)
 	GeminiMultiTimeoutSecs = envInt("GEMINI_MULTI_TIMEOUT_SECS", 90)
 	S3UploadTimeoutSecs = envInt("S3_UPLOAD_TIMEOUT_SECS", 30)
+
+	PlayServiceAccountJSON = strings.TrimSpace(os.Getenv("PLAY_SERVICE_ACCOUNT_JSON"))
+	PlayServiceAccountFile = strings.TrimSpace(os.Getenv("PLAY_SERVICE_ACCOUNT_FILE"))
+	PlayRTDNToken = strings.TrimSpace(os.Getenv("PLAY_RTDN_TOKEN"))
+
+	StarsIdentityPepper = strings.TrimSpace(os.Getenv("STARS_IDENTITY_PEPPER"))
+	if StarsIdentityPepper == "" {
+		// Falling back to the JWT secret keeps returning-user detection
+		// working on a deployment that has not set a dedicated pepper, and
+		// is still not a plain unsalted hash. Logged so it is visible.
+		StarsIdentityPepper = os.Getenv("JWT_SECRET")
+		if StarsIdentityPepper != "" {
+			log.Println("[config] STARS_IDENTITY_PEPPER unset — falling back to JWT_SECRET")
+		}
+	}
 
 	AllowedOrigins = nil
 	for _, o := range strings.Split(os.Getenv("ALLOWED_ORIGINS"), ",") {

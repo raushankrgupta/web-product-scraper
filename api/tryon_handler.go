@@ -23,11 +23,25 @@ import (
 // alive for 2m46s holding a connection, a goroutine and the user's attention
 // before failing anyway. A generation that hasn't returned inside these
 // budgets is not going to.
-func geminiTimeout() time.Duration {
+//
+// The budget now depends on which model is being used: the Pro tier is
+// genuinely slower than the flash tier, and applying the flash deadline to it
+// would cancel work the user has already paid stars for. Per-quality values
+// live in config/stars.json next to the price of that quality, so a tier's
+// cost and its time budget cannot drift apart. GEMINI_TIMEOUT_SECS and
+// GEMINI_MULTI_TIMEOUT_SECS remain as the fallback for a config that does not
+// specify one.
+func geminiTimeout(quality string) time.Duration {
+	if m, ok := config.Stars.Model(quality); ok && m.TimeoutSecs > 0 {
+		return time.Duration(m.TimeoutSecs) * time.Second
+	}
 	return time.Duration(config.GeminiTimeoutSecs) * time.Second
 }
 
-func geminiMultiTimeout() time.Duration {
+func geminiMultiTimeout(quality string) time.Duration {
+	if m, ok := config.Stars.Model(quality); ok && m.MultiTimeoutSecs > 0 {
+		return time.Duration(m.MultiTimeoutSecs) * time.Second
+	}
 	return time.Duration(config.GeminiMultiTimeoutSecs) * time.Second
 }
 
@@ -198,7 +212,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		if url, urlErr := utils.GetPresignedURL(r.Context(), cachedKey); urlErr == nil {
 			utils.AddToLogMessage(&logMessageBuilder, "Served from recent-result cache (no Gemini call)")
 			utils.L(r.Context()).Info("try-on cache hit", "user_id", userIdStr, "key", cachedKey)
-			// Tell QuotaMiddleware not to bill this: we did not generate
+			// Tell StarGateMiddleware not to bill this: we did not generate
 			// anything, so it must not consume one of the user's daily
 			// try-ons.
 			w.Header().Set(CachedResultHeader, "1")
@@ -262,7 +276,9 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		personDetails += fmt.Sprintf(", Product dimensions: %s", product.Dimensions)
 	}
 
-	geminiCtx, cancelGemini := context.WithTimeout(context.Background(), geminiTimeout())
+	quality := GetQualityFromContext(r.Context())
+
+	geminiCtx, cancelGemini := context.WithTimeout(context.Background(), geminiTimeout(quality))
 	defer cancelGemini()
 
 	genStart := time.Now()
@@ -272,7 +288,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		// Legacy /try-on has no garment-slot concept — the product's images
 		// are all "top" as far as the generator is concerned.
 		TopURL: product.Images,
-	})
+	}, quality)
 	if err != nil {
 		respondGenError(w, r, &logMessageBuilder, "/try-on", "legacy", err, genStart)
 		return
@@ -509,9 +525,11 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 
 	// Multi-person generation is legitimately heavier than single-person, so
 	// it gets the larger of the two budgets.
-	genTimeout := geminiMultiTimeout()
+	quality := GetQualityFromContext(r.Context())
+
+	genTimeout := geminiMultiTimeout(quality)
 	if tryOnType == "individual" {
-		genTimeout = geminiTimeout()
+		genTimeout = geminiTimeout(quality)
 	}
 	geminiCtx, cancelGemini := context.WithTimeout(context.Background(), genTimeout)
 	defer cancelGemini()
@@ -522,11 +540,11 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 	var genErr error
 
 	if tryOnType == "couple" && len(peopleData) == 2 {
-		generatedContent, genErr = utils.GenerateCoupleTryOnImage(geminiCtx, themeReferenceURL, themeDescription, peopleData)
+		generatedContent, genErr = utils.GenerateCoupleTryOnImage(geminiCtx, themeReferenceURL, themeDescription, peopleData, quality)
 	} else if tryOnType == "individual" && len(peopleData) == 1 {
-		generatedContent, genErr = utils.GenerateIndividualTryOnImage(geminiCtx, themeReferenceURL, themeDescription, peopleData[0])
+		generatedContent, genErr = utils.GenerateIndividualTryOnImage(geminiCtx, themeReferenceURL, themeDescription, peopleData[0], quality)
 	} else {
-		generatedContent, genErr = utils.GenerateMultiPersonTryOnImage(geminiCtx, tryOnType, themeReferenceURL, themeReferenceURL, themeDescription, peopleData)
+		generatedContent, genErr = utils.GenerateMultiPersonTryOnImage(geminiCtx, tryOnType, themeReferenceURL, themeReferenceURL, themeDescription, peopleData, quality)
 	}
 	if genErr != nil {
 		respondGenError(w, r, &logMessageBuilder, "/try-on/"+tryOnType, tryOnType, genErr, genStart)

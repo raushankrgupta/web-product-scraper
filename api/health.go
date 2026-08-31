@@ -189,6 +189,16 @@ func HealthHandler(w http.ResponseWriter, r *http.Request) {
 			"detail":  bReason,
 		},
 		"gemini": utils.GeminiBreaker.Snapshot(),
+		// A deploy with no Play service account cannot verify a purchase, so
+		// every /billing/purchase returns 503 while users are still able to
+		// pay in the store. Surfacing it here is what makes that visible
+		// before someone pays and gets nothing.
+		"billing": map[string]interface{}{
+			"play_configured":  utils.PlayBillingConfigured(),
+			"rtdn_configured":  config.PlayRTDNToken != "",
+			"star_config_ver":  config.Stars.Version,
+			"star_config_date": config.Stars.UpdatedAt,
+		},
 		"alerts": map[string]interface{}{
 			"enabled": alert.Enabled(),
 			"sent":    sentN,

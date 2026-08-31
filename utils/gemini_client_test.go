@@ -34,7 +34,7 @@ func TestExtractImageBlockedCandidateDoesNotPanic(t *testing.T) {
 		}
 	}()
 
-	got, err := extractImage(resp, "test", time.Second)
+	got, err := extractImage(resp, "test", "test-model", time.Second)
 	if err == nil {
 		t.Fatal("expected an error for a blocked candidate")
 	}
@@ -59,7 +59,7 @@ func TestExtractImageNoCandidatesReportsBlockReason(t *testing.T) {
 		},
 	}
 
-	_, err := extractImage(resp, "test", time.Second)
+	_, err := extractImage(resp, "test", "test-model", time.Second)
 	if err == nil {
 		t.Fatal("expected an error when no candidates are returned")
 	}
@@ -83,7 +83,7 @@ func TestExtractImageRejectsTextResponse(t *testing.T) {
 		},
 	}
 
-	got, err := extractImage(resp, "test", time.Second)
+	got, err := extractImage(resp, "test", "test-model", time.Second)
 	if err == nil {
 		t.Fatal("a TEXT response must be rejected on an image-generation call")
 	}
@@ -105,7 +105,7 @@ func TestExtractImageReturnsBlob(t *testing.T) {
 		},
 	}
 
-	got, err := extractImage(resp, "test", time.Second)
+	got, err := extractImage(resp, "test", "test-model", time.Second)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,13 +118,13 @@ func TestExtractImageEmptyPartsIsAnError(t *testing.T) {
 	resp := &genai.GenerateContentResponse{
 		Candidates: []*genai.Candidate{{Content: &genai.Content{Parts: nil}}},
 	}
-	if _, err := extractImage(resp, "test", time.Second); err == nil {
+	if _, err := extractImage(resp, "test", "test-model", time.Second); err == nil {
 		t.Fatal("expected an error for a candidate with no parts")
 	}
 }
 
 func TestExtractImageNilResponse(t *testing.T) {
-	if _, err := extractImage(nil, "test", time.Second); err == nil {
+	if _, err := extractImage(nil, "test", "test-model", time.Second); err == nil {
 		t.Fatal("expected an error for a nil response")
 	}
 }
