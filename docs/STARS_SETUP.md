@@ -560,6 +560,112 @@ is never indistinguishable from an earned one.
 
 ---
 
+## 6c. Internal testing track (the recommended path)
+
+Better than sideloading, because it is the only way purchases work at all. It
+does **not** touch your live users — internal testing is a separate track from
+production, and existing installs stay on the production build.
+
+### Why this and not closed/open testing
+
+| Track | Availability | Testers | Review |
+|---|---|---|---|
+| **Internal** | minutes | 100 | minimal |
+| Closed | hours to days | larger | full review |
+| Open | days | public | full review |
+
+Internal is the only one with a tight enough loop to debug billing against.
+
+### Setup, once
+
+1. **Play Console → Testing → Internal testing → Testers** → create an email
+   list with your accounts on it. Copy the opt-in link.
+2. **Play Console → Setup → License testing** → add the same emails.
+
+   These are **two separate lists** and both are required. The tester list
+   decides who can install the build; the license-testing list decides who gets
+   test purchases instead of real charges. Having only the first means you will
+   be charged real money.
+3. Bump `versionCode` (or rely on `autoIncrement`, now on in `eas.json`). It
+   must be **higher than production's**, or a tester who already has the live
+   app installed will never receive the test build as an update.
+
+### Build and upload
+
+An `eas.json` **staging** profile has been added. Point it at your staging
+backend first:
+
+```jsonc
+// eas.json → build.staging.env
+"EXPO_PUBLIC_API_BASE_URL": "https://REPLACE-ME.trycloudflare.com"
+```
+
+```bash
+cd ~/Fitly/fitly-app
+eas build --platform android --profile staging
+# upload the .aab to Internal testing, then open the opt-in link on the device
+```
+
+It produces an **.aab**, not an .apk — the Play track only accepts app bundles.
+
+### Point the test build at a staging backend, not production
+
+Use the internal track for the *app* (so billing works) and a staging server
+for the *data* (so test purchases and deleted test accounts never land in your
+production database). One env var on the server: `DB_NAME="fitly_staging"`.
+
+**RTDN can feed both at once.** Play Console names a single Pub/Sub *topic*,
+but you control the *subscriptions* — create two push subscriptions on that one
+topic, one to staging and one to production. Every notification reaches both,
+and each backend ignores tokens it does not recognise (`rtdn purchase for an
+unknown token — cannot attribute` in the logs, then it moves on). No need to
+repoint anything at launch.
+
+### Testing pending UPI payments
+
+This is the case worth going out of your way for, because it is a large share
+of real Indian traffic and the one most likely to silently lose a sale.
+
+As a license tester, the Play purchase sheet offers test payment instruments
+rather than your real cards. Alongside "Test card, always approves" and "Test
+card, always declines" there is a **slow test card that approves after a few
+minutes** — that is what exercises the whole pending path:
+
+1. Buy a pack with the slow instrument
+2. `/billing/purchase` returns `state: "pending"` — **no stars yet**, the app
+   should say "payment is still processing"
+3. Wait; Google settles it and pushes an RTDN
+4. Stars appear without the user doing anything
+
+If the instrument list on your account differs, the fallback is to verify the
+pending branch directly: confirm a `state: "pending"` row lands in
+`star_purchases` and no ledger row is written, then let the hourly reconciler
+re-check it.
+
+```js
+db.star_purchases.find({state: "pending"})   // should credit, then disappear
+```
+
+### Two things that will surprise you
+
+**Test purchases can be voided.** Google may auto-void license-tester purchases,
+and the reconciler will then correctly claw the stars back. If a balance drops a
+few minutes after a successful test buy, that is the refund path working, not a
+bug — check for a `chargeback` row in `star_ledger`.
+
+**A test purchase must still be consumed** before the same pack can be bought
+again. The server consumes on credit, so this is usually invisible; if a repeat
+purchase of the same SKU fails, check `db.star_purchases.find({consumed:false})`.
+
+### Promoting to production
+
+The same .aab is promoted from Internal testing to Production in Play Console —
+no rebuild — but change `EXPO_PUBLIC_API_BASE_URL` back to
+`https://www.tryonfusion.com` and rebuild before you do, or your live users will
+hit the staging server.
+
+---
+
 ## 7. Operating it
 
 **Watch these Telegram alerts:**
