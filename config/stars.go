@@ -35,6 +35,7 @@ type StarConfig struct {
 	Tiers     map[string]map[string]int `json:"tiers"`
 	Packs     []StarPack                `json:"packs"`
 	Free      StarFreeRules             `json:"free"`
+	Rewards   StarRewardRules           `json:"rewards"`
 	Identity  StarIdentityRules         `json:"identity"`
 	Billing   StarBillingRules          `json:"billing"`
 
@@ -123,7 +124,16 @@ type StarPack struct {
 }
 
 // StarFreeRules describes what a user gets without paying.
+//
+// Two currencies live here on purpose. WelcomeStars is real spendable
+// currency — it covers any tier, including Pro and group. WelcomeCredits is
+// the older restricted counter that only buys FreeQuality generations of a
+// FreeTypes kind. Both are issued by the same idempotent grant, so moving the
+// signup gift between them is a config change rather than a code change.
 type StarFreeRules struct {
+	WelcomeStars          int `json:"welcome_stars"`
+	ReturningWelcomeStars int `json:"returning_welcome_stars"`
+
 	WelcomeCredits          int      `json:"welcome_credits"`
 	ReturningWelcomeCredits int      `json:"returning_welcome_credits"`
 	DailyFreeCount          int      `json:"daily_free_count"`
@@ -131,6 +141,49 @@ type StarFreeRules struct {
 	FreeQuality             string   `json:"free_quality"`
 	FreeTypes               []string `json:"free_types"`
 	SuppressWhenAffordable  bool     `json:"suppress_when_affordable"`
+}
+
+// StarRewardRules configures the stars a user can earn without paying.
+type StarRewardRules struct {
+	Referral StarReferralRules `json:"referral"`
+	Review   StarReviewRules   `json:"review"`
+}
+
+// StarReferralRules configures the share-a-code programme.
+//
+// RefereeStars is *on top of* Free.WelcomeStars: a referred signup receives
+// both, so the true acquisition cost of one referral is
+// WelcomeStars + RefereeStars + ReferrerStars.
+type StarReferralRules struct {
+	Enabled       bool `json:"enabled"`
+	ReferrerStars int  `json:"referrer_stars"`
+	RefereeStars  int  `json:"referee_stars"`
+
+	// CodeLength is the number of characters in a generated code, drawn from
+	// an unambiguous alphabet (no O/0, I/1) so a code read aloud or copied by
+	// hand still resolves.
+	CodeLength int `json:"code_length"`
+
+	// MaxRedemptionsPerReferrer caps how many referrals one account is paid
+	// for. Not a fraud control on its own — it is the blast radius if someone
+	// gets around the identity hash.
+	MaxRedemptionsPerReferrer int `json:"max_redemptions_per_referrer"`
+
+	// RedeemWindowHours limits redemption to accounts created recently.
+	// Referrals are an acquisition channel, not a coupon existing users pass
+	// around between themselves.
+	RedeemWindowHours int `json:"redeem_window_hours"`
+}
+
+// StarReviewRules configures the store-review reward.
+//
+// Deliberately has no "minimum rating" field. Google Play's Developer Program
+// Policy forbids incentivising the rating itself, so the grant is for leaving
+// a review at all and must never be conditioned on the score — adding such a
+// field here is the first step to a listing takedown.
+type StarReviewRules struct {
+	Enabled bool `json:"enabled"`
+	Stars   int  `json:"stars"`
 }
 
 // StarIdentityRules configures returning-user detection.
@@ -255,6 +308,19 @@ func (s *StarConfig) validate() error {
 	if s.Free.WelcomeCredits < 0 || s.Free.ReturningWelcomeCredits < 0 || s.Free.DailyFreeCount < 0 {
 		return fmt.Errorf("free entitlements cannot be negative")
 	}
+	if s.Free.WelcomeStars < 0 || s.Free.ReturningWelcomeStars < 0 {
+		return fmt.Errorf("welcome star grants cannot be negative")
+	}
+	// A returning grant larger than the first-time one inverts the entire
+	// anti-farming rule: deleting the account would become the profitable move.
+	if s.Free.ReturningWelcomeStars > s.Free.WelcomeStars {
+		return fmt.Errorf("free.returning_welcome_stars (%d) exceeds free.welcome_stars (%d), which rewards delete-and-rejoin",
+			s.Free.ReturningWelcomeStars, s.Free.WelcomeStars)
+	}
+
+	if err := s.validateRewards(); err != nil {
+		return err
+	}
 
 	if s.Billing.PackageName == "" {
 		return fmt.Errorf("billing.package_name is required")
@@ -275,6 +341,41 @@ func (s *StarConfig) validate() error {
 			s.Billing.HoldExpiryMinutes, longest)
 	}
 
+	return nil
+}
+
+// validateRewards rejects a reward configuration that could be farmed or that
+// silently pays nothing.
+//
+// Split out of validate() because these are the values a growth experiment
+// edits most often, and a mistake here is spent money rather than a crash.
+func (s *StarConfig) validateRewards() error {
+	r := s.Rewards.Referral
+	if r.Enabled {
+		if r.ReferrerStars < 0 || r.RefereeStars < 0 {
+			return fmt.Errorf("referral star grants cannot be negative")
+		}
+		if r.ReferrerStars == 0 && r.RefereeStars == 0 {
+			return fmt.Errorf("rewards.referral is enabled but pays nobody; set referrer_stars or referee_stars, or disable it")
+		}
+		// Below 5 characters the code space is small enough to enumerate,
+		// and every hit is free stars.
+		if r.CodeLength < 5 || r.CodeLength > 12 {
+			return fmt.Errorf("rewards.referral.code_length must be 5-12, got %d", r.CodeLength)
+		}
+		if r.MaxRedemptionsPerReferrer <= 0 {
+			return fmt.Errorf("rewards.referral.max_redemptions_per_referrer must be positive")
+		}
+		if r.RedeemWindowHours <= 0 {
+			return fmt.Errorf("rewards.referral.redeem_window_hours must be positive")
+		}
+	}
+
+	if v := s.Rewards.Review; v.Enabled {
+		if v.Stars <= 0 {
+			return fmt.Errorf("rewards.review is enabled but grants %d stars", v.Stars)
+		}
+	}
 	return nil
 }
 

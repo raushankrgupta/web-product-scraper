@@ -32,23 +32,25 @@ func grantSignupBonus(userID, email string, logger *strings.Builder) {
 		utils.AddToLogMessage(logger, fmt.Sprintf("signup identity check failed: %v", err))
 	}
 
-	credits, err := utils.GrantWelcomeCredits(ctx, userID, returning)
+	grant, err := utils.GrantWelcomeCredits(ctx, userID, returning)
 	if err != nil {
 		// A failed grant must not fail the signup — the user is registered
-		// either way, and credits can be added by hand. Losing the account
+		// either way, and stars can be added by hand. Losing the account
 		// over a bonus would be the worse trade.
-		utils.AddToLogMessage(logger, fmt.Sprintf("welcome credit grant failed: %v", err))
+		utils.AddToLogMessage(logger, fmt.Sprintf("welcome grant failed: %v", err))
 		return
 	}
 
 	switch {
-	case credits == 0:
-		utils.AddToLogMessage(logger, "welcome credits already granted; none issued")
+	case !grant.Any():
+		utils.AddToLogMessage(logger, "welcome gift already granted; none issued")
 	case returning:
 		utils.AddToLogMessage(logger, fmt.Sprintf(
-			"granted %d returning-user welcome credits (this email has registered before)", credits))
+			"granted returning-user welcome gift: %d stars, %d free credits (this email has registered before)",
+			grant.Stars, grant.Credits))
 	default:
-		utils.AddToLogMessage(logger, fmt.Sprintf("granted %d welcome credits", credits))
+		utils.AddToLogMessage(logger, fmt.Sprintf(
+			"granted welcome gift: %d stars, %d free credits", grant.Stars, grant.Credits))
 	}
 }
 
@@ -69,4 +71,11 @@ func releaseSignupIdentity(userID, email string, logger *strings.Builder) {
 
 	utils.RecordAccountDeletion(ctx, email)
 	utils.PurgeUserStarState(ctx, userID)
+
+	// The referral code is per account and must not survive it: a code
+	// printed on someone's screen should stop working when they leave, and
+	// the next account would otherwise inherit its earned-star counters.
+	// The redemption records stay — they are keyed on the email hash and are
+	// what stops delete-and-rejoin from farming the referee bonus.
+	utils.PurgeReferralCode(ctx, userID)
 }

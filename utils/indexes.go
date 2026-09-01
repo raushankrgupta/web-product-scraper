@@ -74,6 +74,42 @@ func EnsureIndexes(ctx context.Context, dbName string) {
 			Keys:    bson.D{{Key: "email_hash", Value: 1}},
 			Options: options.Index().SetUnique(true),
 		}},
+
+		// --- Earned stars ---
+		//
+		// One code per user. The code itself is the _id (already unique), so
+		// this is the index that stops a user ending up with two codes when
+		// they open the referral screen twice at once.
+		{models.CollReferralCodes, mongo.IndexModel{
+			Keys:    bson.D{{Key: "user_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		}},
+		// The referral screen counts how many people used a given code.
+		{models.CollReferralRedemptions, mongo.IndexModel{
+			Keys: bson.D{{Key: "referrer_user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// Which accounts a code has paid out for, for fraud review. The
+		// one-shot guard itself is the _id (the referee's email hash), so it
+		// needs no index of its own.
+		{models.CollReferralRedemptions, mongo.IndexModel{
+			Keys: bson.D{{Key: "code", Value: 1}},
+		}},
+		// Deletion reasons are read as an aggregate, newest first.
+		{models.CollDeletionFeedback, mongo.IndexModel{
+			Keys: bson.D{{Key: "reason", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+
+		// --- Custom backgrounds ---
+		//
+		// The theme picker lists one user's uploads newest first, and the
+		// try-on resolves a theme by id with an ownership clause. Partial on
+		// user_id so the index covers only custom backgrounds — the curated
+		// themes have no user_id and there is no reason to index them here.
+		{"themes", mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+			Options: options.Index().SetPartialFilterExpression(
+				bson.M{"user_id": bson.M{"$exists": true}}),
+		}},
 	}
 
 	for _, s := range specs {

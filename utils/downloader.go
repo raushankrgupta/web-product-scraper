@@ -47,7 +47,12 @@ func UploadImagesToS3(ctx context.Context, urls []string, folderPrefix string) (
 
 			// Download and Upload
 			if err := downloadAndUpload(ctx, url, objectKey); err != nil {
-				slog.Info(fmt.Sprintf("Failed to process %s: %v", url, err))
+				// Warn, not Info: the caller's fallback is to keep the
+				// original retailer URL, which then gets persisted to the
+				// wardrobe and 404s at try-on time, hours or days later.
+				// This line is the only place that failure is visible.
+				slog.Warn("image re-host failed, keeping remote URL",
+					"url", url, "key", objectKey, "error", err.Error())
 				return
 			}
 

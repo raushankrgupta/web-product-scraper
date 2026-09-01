@@ -60,7 +60,9 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	productURL, err := utils.NormalizeProductURL(productURL)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Rejected malformed URL %q: %v", rawURL, err))
-		utils.RespondError(w, nil, "That doesn't look like a valid product link. Please paste the full URL.", http.StatusBadRequest)
+		utils.RespondErrorReason(w, nil,
+			"That doesn't look like a valid product link. Please paste the full URL.",
+			"invalid_url", http.StatusBadRequest)
 		return
 	}
 	if productURL != strings.TrimSpace(rawURL) {
@@ -115,7 +117,12 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		// WARN with rollup so a burst of the same domain is one message.
 		alert.Warnf("scraper", "no scraper found for domain", err, "domain", hostOf(productURL))
 		utils.L(r.Context()).Warn("no scraper found", "domain", hostOf(productURL), "url", productURL)
-		utils.RespondError(w, nil, "We can't read product details from that site yet. Try Amazon, Flipkart, Myntra, or upload the photo directly.", http.StatusBadRequest)
+		// `unsupported_site` is the app's cue to offer the crop-and-upload
+		// path rather than a retry: retrying a domain we have no adapter for
+		// will fail identically every time.
+		utils.RespondErrorReason(w, nil,
+			"We can't read product details from that site yet. Try Amazon, Flipkart, Myntra, or upload the photo directly.",
+			"unsupported_site", http.StatusBadRequest)
 		return
 	}
 
@@ -125,10 +132,21 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	product, err := scraper.ScrapeProduct(resolvedURL)
 	if err != nil {
 		saveFailedScrape(resolvedURL, fmt.Sprintf("scrape_failed: %v", err))
-		alert.Errorf("scraper", "scrape failed after routing", err,
+		// `scrape_failed` covers a site we *do* support that refused us —
+		// Myntra blocking the datacenter IP is the common case. Worth one
+		// retry, and the app offers screenshots as the reliable fallback.
+		//
+		// Warn rather than Error, and 502 rather than 500: a retailer
+		// blocking a scrape is upstream behaviour we expect, not a fault in
+		// this server. At Error it pages, and with alerting armed at WARN a
+		// single blocked domain would drown the channel in incidents nobody
+		// can act on. The `reason` the app keys off is unchanged.
+		alert.Warnf("scraper", "scrape failed after routing", err,
 			"domain", hostOf(resolvedURL), "adapter", adapter)
-		utils.L(r.Context()).Error("scrape failed", "domain", hostOf(resolvedURL), "adapter", adapter, "error", err.Error())
-		utils.RespondError(w, nil, "We couldn't read that product page. Please try again, or upload the photo directly.", http.StatusInternalServerError)
+		utils.L(r.Context()).Warn("scrape failed", "domain", hostOf(resolvedURL), "adapter", adapter, "error", err.Error())
+		utils.RespondErrorReason(w, nil,
+			"We couldn't read that product page. Please try again, or upload the photo directly.",
+			"scrape_failed", http.StatusBadGateway)
 		return
 	}
 
@@ -162,15 +180,27 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Error uploading images: %v", err))
 	}
 
+	// An image we could not re-host keeps its original retailer URL. That is
+	// deliberate — a partial product beats no product — but the URL is what
+	// gets saved to the wardrobe verbatim, and retailer CDNs expire or
+	// hotlink-block it, which surfaces much later as a 404 mid-generation.
+	// Count them here so the scrape that caused it is the thing on record.
 	var localMainKeys []string
+	unhosted := 0
 	for _, img := range product.Images {
 		if key, ok := urlToKey[img]; ok {
 			localMainKeys = append(localMainKeys, key)
 		} else {
 			localMainKeys = append(localMainKeys, img)
+			unhosted++
 		}
 	}
 	product.Images = localMainKeys
+	if unhosted > 0 {
+		utils.L(r.Context()).Warn("product images kept as remote URLs",
+			"domain", hostOf(resolvedURL), "adapter", adapter,
+			"unhosted", unhosted, "total", len(product.Images))
+	}
 
 	for i := range product.Variants {
 		var localVarKeys []string

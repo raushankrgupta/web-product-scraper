@@ -614,6 +614,13 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture why they are leaving before anything is purged. The body is
+	// optional — the survey is skippable by design, and a user who declines
+	// to answer must still be able to delete — so a missing or malformed
+	// body is not an error here. It has to run before the balance is cleared
+	// because the usage snapshot is what makes the answer interpretable.
+	captureDeletionFeedback(ctx, r, userIdStr, existing.CreatedAt, &logMessageBuilder)
+
 	// Record the deletion against the email identity and clear the star
 	// balance before the address is tombstoned — `existing.Email` still holds
 	// the real address at this point, and it is the input the identity hash
@@ -648,6 +655,54 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	utils.RespondJSON(w, http.StatusOK, map[string]string{
 		"message": "Account deleted successfully. You have been logged out.",
 	})
+}
+
+// deleteAccountRequest is the optional exit survey sent with a deletion.
+type deleteAccountRequest struct {
+	Reason     string `json:"reason"`
+	Details    string `json:"details"`
+	AppVersion string `json:"app_version"`
+}
+
+// captureDeletionFeedback stores the exit survey, if one was sent.
+//
+// Every failure path here is silent on purpose. This is called from the
+// deletion handler, and a user's right to delete their account cannot be
+// contingent on a survey write succeeding — or on them having answered it at
+// all. Anything that goes wrong is logged and the deletion continues.
+func captureDeletionFeedback(ctx context.Context, r *http.Request, userID string,
+	createdAt time.Time, logger *strings.Builder) {
+
+	var req deleteAccountRequest
+	body := http.MaxBytesReader(nil, r.Body, maxJSONBody)
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		return // no body, or not JSON: the survey was skipped
+	}
+
+	reason := strings.TrimSpace(req.Reason)
+	details := strings.TrimSpace(req.Details)
+	if reason == "" && details == "" {
+		return
+	}
+	// Free text is user-authored and lands in a table someone will read.
+	// Cap it so a paste of an entire log file doesn't become the document.
+	if len(details) > 2000 {
+		details = details[:2000]
+	}
+
+	ageDays := 0
+	if !createdAt.IsZero() {
+		ageDays = int(time.Since(createdAt).Hours() / 24)
+	}
+
+	utils.SaveDeletionFeedback(ctx, models.DeletionFeedback{
+		UserID:         userID,
+		Reason:         reason,
+		Details:        details,
+		AccountAgeDays: ageDays,
+		AppVersion:     strings.TrimSpace(req.AppVersion),
+	})
+	utils.AddToLogMessage(logger, "deletion feedback recorded (reason: "+reason+")")
 }
 
 // GoogleLoginRequest represents the payload for Google Login

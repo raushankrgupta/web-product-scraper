@@ -149,32 +149,72 @@ func freeSuppressed(b *models.StarBalance) bool {
 
 // ------------------------------------------------------------------- grants
 
+// WelcomeGrant is what a new account actually received.
+type WelcomeGrant struct {
+	Stars   int
+	Credits int
+}
+
+// Any reports whether anything was issued — false means the bonus had already
+// been granted, which is the normal outcome of a retried signup.
+func (g WelcomeGrant) Any() bool { return g.Stars > 0 || g.Credits > 0 }
+
 // GrantWelcomeCredits issues the one-time signup bonus. `returning` selects
 // the smaller grant for an email that has registered before.
+//
+// The gift is paid in real stars (free.welcome_stars) rather than the older
+// restricted free_credits counter, so a new user can spend it on whatever
+// they actually want to try — including a Pro or group render, which is the
+// generation most likely to make them stay. Both currencies are issued here
+// so the choice stays a config change; set either to 0 to turn it off.
 //
 // The welcome_granted flag makes this safe to call from every signup path
 // (OTP verify, Google first login) without double-granting; the identity
 // record is what stops the bonus being farmed by deleting and rejoining.
-func GrantWelcomeCredits(ctx context.Context, userID string, returning bool) (int, error) {
-	credits := config.Stars.Free.WelcomeCredits
+func GrantWelcomeCredits(ctx context.Context, userID string, returning bool) (WelcomeGrant, error) {
+	cfg := config.Stars.Free
+
+	stars, credits := cfg.WelcomeStars, cfg.WelcomeCredits
 	if returning {
-		credits = config.Stars.Free.ReturningWelcomeCredits
+		stars, credits = cfg.ReturningWelcomeStars, cfg.ReturningWelcomeCredits
 	}
-	if credits <= 0 {
-		return 0, nil
+	if stars <= 0 && credits <= 0 {
+		return WelcomeGrant{}, nil
 	}
 
 	now := time.Now()
+
+	// Both currencies move in the same conditional update as the
+	// welcome_granted flag, so a concurrent second signup call cannot see the
+	// flag unset and grant again.
+	inc := bson.M{}
+	if stars > 0 {
+		inc["stars"] = stars
+	}
+	if credits > 0 {
+		inc["free_credits"] = credits
+	}
+
+	setOnInsert := bson.M{
+		"free_day": "", "free_day_used": 0, "held": bson.A{},
+		"lifetime_purchased_stars": 0, "lifetime_spent_stars": 0,
+		"lifetime_generations": 0, "created_at": now,
+	}
+	// $inc and $setOnInsert must not touch the same field, so only seed the
+	// counter that this grant is not already incrementing.
+	if stars <= 0 {
+		setOnInsert["stars"] = 0
+	}
+	if credits <= 0 {
+		setOnInsert["free_credits"] = 0
+	}
+
 	res, err := starBalances().UpdateOne(ctx,
 		bson.M{"_id": userID, "welcome_granted": bson.M{"$ne": true}},
 		bson.M{
-			"$inc": bson.M{"free_credits": credits},
-			"$set": bson.M{"welcome_granted": true, "returning": returning, "updated_at": now},
-			"$setOnInsert": bson.M{
-				"stars": 0, "free_day": "", "free_day_used": 0, "held": bson.A{},
-				"lifetime_purchased_stars": 0, "lifetime_spent_stars": 0,
-				"lifetime_generations": 0, "created_at": now,
-			},
+			"$inc":         inc,
+			"$set":         bson.M{"welcome_granted": true, "returning": returning, "updated_at": now},
+			"$setOnInsert": setOnInsert,
 		},
 		options.Update().SetUpsert(true),
 	)
@@ -182,28 +222,66 @@ func GrantWelcomeCredits(ctx context.Context, userID string, returning bool) (in
 		// A duplicate-key here means a concurrent grant already inserted the
 		// document; that is the desired outcome, not a failure.
 		if mongo.IsDuplicateKeyError(err) {
-			return 0, nil
+			return WelcomeGrant{}, nil
 		}
-		return 0, fmt.Errorf("grant welcome credits: %w", err)
+		return WelcomeGrant{}, fmt.Errorf("grant welcome bonus: %w", err)
 	}
 	if res.ModifiedCount == 0 && res.UpsertedCount == 0 {
-		return 0, nil // already granted
+		return WelcomeGrant{}, nil // already granted
 	}
 
-	appendLedger(ctx, models.StarLedgerEntry{
-		UserID: userID, Delta: credits, Reason: models.ReasonGrant,
-		Source: models.FundFreeCredit,
-		Note:   grantNote(returning),
-	})
-	slog.Info("welcome credits granted", "user_id", userID, "credits", credits, "returning", returning)
-	return credits, nil
+	if stars > 0 {
+		appendLedger(ctx, models.StarLedgerEntry{
+			UserID: userID, Delta: stars, Reason: models.ReasonGrant,
+			Source: models.FundStars, Note: grantNote(returning),
+		})
+	}
+	if credits > 0 {
+		appendLedger(ctx, models.StarLedgerEntry{
+			UserID: userID, Delta: credits, Reason: models.ReasonGrant,
+			Source: models.FundFreeCredit, Note: grantNote(returning),
+		})
+	}
+
+	slog.Info("welcome bonus granted",
+		"user_id", userID, "stars", stars, "credits", credits, "returning", returning)
+	return WelcomeGrant{Stars: stars, Credits: credits}, nil
 }
 
 func grantNote(returning bool) string {
 	if returning {
-		return "returning signup welcome credits"
+		return "Welcome back bonus"
 	}
-	return "new signup welcome credits"
+	return "Welcome gift"
+}
+
+// GrantStars adds earned (not purchased) stars and writes the matching audit
+// row. Used by the referral and review rewards.
+//
+// Callers are responsible for the one-shot guard — this function will happily
+// grant twice if asked twice. The guards live in utils/rewards.go, where each
+// is a unique index rather than a check.
+func GrantStars(ctx context.Context, userID string, stars int, reason, note string) error {
+	if stars <= 0 {
+		return nil
+	}
+	if _, err := GetOrCreateBalance(ctx, userID); err != nil {
+		return err
+	}
+
+	if _, err := starBalances().UpdateOne(ctx,
+		bson.M{"_id": userID},
+		bson.M{"$inc": bson.M{"stars": stars}, "$set": bson.M{"updated_at": time.Now()}},
+	); err != nil {
+		return fmt.Errorf("grant %s stars: %w", reason, err)
+	}
+
+	appendLedger(ctx, models.StarLedgerEntry{
+		UserID: userID, Delta: stars, Reason: reason,
+		Source: models.FundStars, Note: note,
+	})
+	slog.Info("stars granted", "user_id", userID, "stars", stars, "reason", reason)
+	return nil
 }
 
 // ---------------------------------------------------------------- reserving

@@ -249,6 +249,14 @@ func registerRoutes(mux *http.ServeMux) {
 	// finds the URL forge a refund.
 	mux.Handle("/billing/play-rtdn", guard(post, http.HandlerFunc(api.PlayRTDNHandler)))
 
+	// Earned stars. Both rewards are bounded per identity server-side, so
+	// these are ordinary authenticated endpoints — the guard is the unique
+	// index behind them, not the route.
+	mux.Handle("/rewards", guard(get, api.AuthMiddleware(http.HandlerFunc(api.RewardsHandler))))
+	mux.Handle("/rewards/referral", guard(get, api.AuthMiddleware(http.HandlerFunc(api.ReferralHandler))))
+	mux.Handle("/rewards/referral/redeem", guard(post, api.AuthMiddleware(http.HandlerFunc(api.RedeemReferralHandler))))
+	mux.Handle("/rewards/review", guard(post, api.AuthMiddleware(http.HandlerFunc(api.ReviewRewardHandler))))
+
 	// Legal.
 	mux.Handle("/legal/privacy-policy", guard(get, http.HandlerFunc(api.GetPrivacyPolicy)))
 	mux.Handle("/legal/terms-of-service", guard(get, http.HandlerFunc(api.GetTermsOfService)))
@@ -257,7 +265,19 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/product/details", guard(post, api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler)), true)))
 	mux.Handle("/product/upload", guard(post, api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.UploadProductHandler)), true)))
 
-	mux.Handle("/themes", guard(get, api.ImageCacheMiddleware(http.HandlerFunc(api.GetThemesHandler), true)))
+	// Cached for a day, not the 30-day `immutable` the other image routes use.
+	// The body carries presigned S3 URLs, and an `immutable` response outlives
+	// its own links: clients kept replaying a month-old payload whose
+	// signatures had expired after an hour, so every theme tile rendered
+	// blank. One day sits well inside utils.PresignCatalog.
+	mux.Handle("/themes", guard(get, api.ImageCacheMiddleware(http.HandlerFunc(api.GetThemesHandler), false)))
+	// A user's own uploaded backgrounds. Deliberately NOT wrapped in
+	// ImageCacheMiddleware: that sets `Cache-Control: public`, and this
+	// response is private to one account. Auth is applied inside
+	// CustomThemeRoute, alongside the guest rejection.
+	mux.Handle("/themes/custom", guard(
+		[]string{http.MethodGet, http.MethodPost, http.MethodDelete},
+		api.CustomThemeRoute()))
 
 	// Person endpoints return user-specific JSON (not raw images), so we don't
 	// wrap them in ImageCacheMiddleware. That middleware set

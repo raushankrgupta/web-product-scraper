@@ -57,11 +57,26 @@ func CatalogHandler(w http.ResponseWriter, r *http.Request) {
 		"qualities":       qualities,
 		"default_quality": cfg.DefaultQuality,
 		"free": map[string]interface{}{
+			"welcome_stars":    cfg.Free.WelcomeStars,
 			"welcome_credits":  cfg.Free.WelcomeCredits,
 			"daily_free_count": cfg.Free.DailyFreeCount,
 			"free_quality":     cfg.Free.FreeQuality,
 			"free_types":       cfg.Free.FreeTypes,
 			"stars_threshold":  cfg.CheapestTierStars(),
+		},
+		// Published so the app can say "get 50 stars" without hardcoding a
+		// number that config/stars.json is free to change. Amounts only —
+		// eligibility is per user and lives on /rewards.
+		"rewards": map[string]interface{}{
+			"referral": map[string]interface{}{
+				"enabled":        cfg.Rewards.Referral.Enabled,
+				"referrer_stars": cfg.Rewards.Referral.ReferrerStars,
+				"referee_stars":  cfg.Rewards.Referral.RefereeStars,
+			},
+			"review": map[string]interface{}{
+				"enabled": cfg.Rewards.Review.Enabled,
+				"stars":   cfg.Rewards.Review.Stars,
+			},
 		},
 	})
 }

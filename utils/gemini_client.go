@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"sync"
@@ -456,11 +457,29 @@ func fetchImage(ctx context.Context, pathOrURL string) ([]byte, error) {
 	return data, nil
 }
 
+// imageSource reduces a fetch target to something safe to log: scheme, host
+// and path, with the query string dropped. The query is where a presign puts
+// its signature and credential scope, so the full URL must never reach a log
+// line or an alert — but without *some* identity, a repeating "image fetch
+// failed" says only that one of N images died, and cannot be traced back to
+// the stored key or the retailer URL that produced it.
+func imageSource(pathOrURL string) string {
+	if !strings.HasPrefix(pathOrURL, "http") {
+		return pathOrURL // local path, no signature to leak
+	}
+	u, err := neturl.Parse(pathOrURL)
+	if err != nil {
+		return "unparseable-url"
+	}
+	return u.Host + u.Path
+}
+
 func fetchImageLogged(ctx context.Context, label, url string) ([]byte, string, error) {
 	data, err := fetchImage(ctx, url)
 	if err != nil {
-		slog.Warn("gemini image fetch failed", "label", label, "error", err.Error())
-		alert.Warnf("gemini", "image fetch failed", err, "label", label)
+		src := imageSource(url)
+		slog.Warn("gemini image fetch failed", "label", label, "source", src, "error", err.Error())
+		alert.Warnf("gemini", "image fetch failed", err, "label", label, "source", src)
 		return nil, "", err
 	}
 	mime := "jpeg"

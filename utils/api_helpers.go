@@ -75,6 +75,23 @@ func RespondError(w http.ResponseWriter, logger *strings.Builder, message string
 	RespondJSON(w, status, map[string]string{"error": message})
 }
 
+// RespondErrorReason is RespondError plus a stable machine-readable code.
+//
+// The `error` string is prose for a human and changes whenever the copy is
+// improved; `reason` is a contract. It exists because the app has to branch
+// on *which* failure happened — an unsupported shopping site should offer the
+// screenshot-upload path, a blocked scrape should offer a retry — and
+// matching on the message text is how that quietly breaks the next time
+// someone rewords it.
+func RespondErrorReason(w http.ResponseWriter, logger *strings.Builder, message, reason string, status int) {
+	if logger != nil {
+		AddToLogMessage(logger, fmt.Sprintf("%s (%s)", message, reason))
+	} else {
+		slog.Warn(message, "status", status, "reason", reason)
+	}
+	RespondJSON(w, status, map[string]string{"error": message, "reason": reason})
+}
+
 // RespondInternalError handles a server-side failure: the real error is
 // logged and alerted, and the client gets `publicMsg` only.
 //

@@ -118,11 +118,30 @@
       "welcome bonus can never be cashed out against an expensive Pro render.",
       "",
       "Spend order is fixed: daily_free first (it expires at midnight UTC",
-      "anyway), then welcome credits (never expire), then purchased stars."
+      "anyway), then welcome credits (never expire), then purchased stars.",
+      "",
+      "welcome_stars is the headline signup gift and is REAL currency: it",
+      "spends on any tier, including Pro and group. welcome_credits is the",
+      "older restricted counter, kept at 0 so the two do not stack. Both are",
+      "issued by the same idempotent grant, so switching between them is a",
+      "config change, not a code change."
     ],
-    "welcome_credits": 5,
-    "returning_welcome_credits": 1,
-    "_returning_note": "Applied when the signup email has been seen before (see identity.*). Deleting an account and re-registering therefore yields 1, not 5.",
+    "welcome_stars": 100,
+    "returning_welcome_stars": 20,
+    "_welcome_stars_note": [
+      "100 stars buys 10 Standard individual try-ons or 4 Pro ones. At the",
+      "cheapest pack rate that is a real cost per signup — run",
+      "'go run ./tools/stars_check' after changing it, and watch the ratio of",
+      "signups to generations if you raise it further.",
+      "",
+      "NOTE the interaction with free.suppress_when_affordable: a user holding",
+      "100 stars is above the cheapest tier, so their daily free try-on is",
+      "paused until the balance falls back below stars_threshold. That is",
+      "intended — they are not short of generations — and the app explains it."
+    ],
+    "welcome_credits": 0,
+    "returning_welcome_credits": 0,
+    "_returning_note": "Applied when the signup email has been seen before (see identity.*). Deleting an account and re-registering therefore yields returning_welcome_stars, not the full grant.",
     "daily_free_count": 1,
     "guest_daily_free_count": 1,
     "free_quality": "flash",
@@ -144,6 +163,44 @@
     "enabled": true,
     "normalise_gmail_dots": true,
     "_normalise_note": "Treats r.k.gupta@gmail.com, rkgupta@gmail.com and rkgupta+anything@gmail.com as one identity, and folds googlemail.com into gmail.com. Google genuinely routes all of those to a single inbox, so counting them as separate users turns the welcome bonus into a free vending machine. Applied to gmail.com / googlemail.com only — dot-insensitivity is not safe to assume for other providers."
+  },
+  "rewards": {
+    "_note": [
+      "Earned stars. Everything here is issued server-side and recorded in",
+      "star_ledger, so a granted star is indistinguishable from a bought one",
+      "at spend time but fully traceable in support.",
+      "",
+      "Every reward below is structurally one-shot: the guard is a unique",
+      "index on a peppered email hash, not a boolean someone has to remember",
+      "to check. That is what makes delete-and-rejoin useless as a way to",
+      "farm them."
+    ],
+    "referral": {
+      "enabled": true,
+      "referrer_stars": 50,
+      "referee_stars": 50,
+      "_stars_note": "The referee also receives free.welcome_stars, so a referred signup lands on 150 and costs us 200 including the referrer's cut.",
+      "code_length": 7,
+      "max_redemptions_per_referrer": 100,
+      "_max_note": "A cap on how many referrals one account can be paid for. Not a fraud control on its own — it is the blast radius when someone finds a way around the identity hash.",
+      "redeem_window_hours": 168,
+      "_window_note": "A code can only be redeemed within this long after the redeeming account was created. Referrals are an acquisition channel, not a coupon existing users hand each other."
+    },
+    "review": {
+      "enabled": true,
+      "stars": 50,
+      "_policy_note": [
+        "Google Play's Developer Program Policy forbids incentivising the",
+        "RATING. This reward is therefore for leaving a review at all, and",
+        "the app copy must never ask for five stars or condition the grant",
+        "on the score. Do not change the wording without re-reading that",
+        "policy — an incentivised-ratings strike removes the listing.",
+        "",
+        "No store exposes an API that proves a given user left a review, so",
+        "this is an honour-system grant. It is bounded instead of verified:",
+        "one grant per email identity, ever, worth review.stars."
+      ]
+    }
   },
   "billing": {
     "_note": "Google Play consumable purchase handling.",

@@ -429,7 +429,20 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		}
 		themeCollection := utils.GetCollection(config.DBName, "themes")
 		var theme models.Theme
-		if err := themeCollection.FindOne(ctx, bson.M{"_id": themeObjID}).Decode(&theme); err != nil {
+		// Curated themes (no user_id) are available to everyone; a custom
+		// background belongs to exactly one account. Without the ownership
+		// clause, knowing an id would be enough to generate against someone
+		// else's uploaded photo — and the theme id travels to the client, so
+		// ids are not secret.
+		themeFilter := bson.M{
+			"_id":        themeObjID,
+			"is_deleted": bson.M{"$ne": true},
+			"$or": []bson.M{
+				{"user_id": bson.M{"$exists": false}},
+				{"user_id": userObjID},
+			},
+		}
+		if err := themeCollection.FindOne(ctx, themeFilter).Decode(&theme); err != nil {
 			utils.RespondError(w, &logMessageBuilder, "Theme not found", http.StatusNotFound)
 			return
 		}
@@ -488,12 +501,17 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		}
 		details := strings.Join(detailsParts, ", ")
 
+		// Scoped to the caller for the same reason the person and theme
+		// lookups above are: wardrobe ids travel to the client, so an id
+		// alone must not be enough to generate against someone else's
+		// uploaded garment photo. Note `user_id` is stored as a string
+		// here (models.WardrobeItem.UserID), not an ObjectID.
 		getWardrobeImages := func(itemID string) []string {
 			if itemID != "" && itemID != "null" {
 				objID, err := primitive.ObjectIDFromHex(itemID)
 				if err == nil {
 					var item models.WardrobeItem
-					if err := wardrobeCollection.FindOne(ctx, bson.M{"_id": objID}).Decode(&item); err == nil && len(item.Images) > 0 {
+					if err := wardrobeCollection.FindOne(ctx, bson.M{"_id": objID, "user_id": userIDStr}).Decode(&item); err == nil && len(item.Images) > 0 {
 						item.Images = utils.PresignImageURLs(r.Context(), item.Images)
 						return item.Images
 					}

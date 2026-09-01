@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -78,9 +79,19 @@ func DevStarsHandler(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, nil, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// The reward claims are keyed on the same hash and outlive the
+		// account by design, so forgetting the signup identity without them
+		// leaves the referral and review rewards permanently unclaimable for
+		// this address — which makes those flows untestable on your own
+		// account after exactly one run.
+		rewardsCleared, rErr := utils.ForgetRewardClaims(ctx, req.Email)
+		if rErr != nil {
+			slog.Warn("dev forget: clearing reward claims failed", "error", rErr)
+		}
 		utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
 			"action": "forget", "removed": removed,
-			"note": "the next signup with this address counts as brand new",
+			"reward_claims_cleared": rewardsCleared,
+			"note":                  "the next signup with this address counts as brand new",
 		})
 		return
 	}
