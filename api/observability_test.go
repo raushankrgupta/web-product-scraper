@@ -148,7 +148,7 @@ func TestRequestIDMiddlewareRejectsOversizedInboundID(t *testing.T) {
 func TestTombstoneEmail(t *testing.T) {
 	id := primitive.NewObjectID()
 
-	got := tombstoneEmail("someone@gmail.com", id)
+	got := utils.TombstoneEmail("someone@gmail.com", id)
 	if got == "someone@gmail.com" {
 		t.Fatal("the original address must not survive")
 	}
@@ -161,7 +161,7 @@ func TestTombstoneEmail(t *testing.T) {
 
 	// Two different users deleting the same address produce distinct
 	// tombstones — a unique index on `email` must not reject the second.
-	other := tombstoneEmail("someone@gmail.com", primitive.NewObjectID())
+	other := utils.TombstoneEmail("someone@gmail.com", primitive.NewObjectID())
 	if other == got {
 		t.Error("two deletions of the same address collided")
 	}
@@ -170,12 +170,12 @@ func TestTombstoneEmail(t *testing.T) {
 func TestTombstoneEmailHandlesMalformedInput(t *testing.T) {
 	id := primitive.NewObjectID()
 	for _, in := range []string{"", "no-at-sign", "trailing@"} {
-		got := tombstoneEmail(in, id)
+		got := utils.TombstoneEmail(in, id)
 		if got == in {
-			t.Errorf("tombstoneEmail(%q) returned the input unchanged", in)
+			t.Errorf("utils.TombstoneEmail(%q) returned the input unchanged", in)
 		}
 		if !strings.Contains(got, "@") {
-			t.Errorf("tombstoneEmail(%q) = %q, not an address", in, got)
+			t.Errorf("utils.TombstoneEmail(%q) = %q, not an address", in, got)
 		}
 	}
 }
