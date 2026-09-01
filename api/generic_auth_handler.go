@@ -89,7 +89,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 			// User was deleted, rename the old email so it's free again.
 			// Uses the same tombstone shape as DeleteAccountHandler and
 			// GoogleLoginHandler so all three paths behave identically.
-			newEmail := tombstoneEmail(existingUser.Email, existingUser.ID)
+			newEmail := utils.TombstoneEmail(existingUser.Email, existingUser.ID)
 			_, updateErr := collection.UpdateOne(ctx, bson.M{"_id": existingUser.ID},
 				bson.M{"$set": bson.M{"email": newEmail, "deleted_email": existingUser.Email}})
 			if updateErr != nil {
@@ -615,7 +615,7 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 		"$set": bson.M{
 			"status":        "deleted",
 			"deleted_at":    time.Now(),
-			"email":         tombstoneEmail(existing.Email, userID),
+			"email":         utils.TombstoneEmail(existing.Email, userID),
 			"deleted_email": existing.Email,
 		},
 	}
@@ -761,7 +761,7 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 			// original address, which used to 403 this login forever. Free
 			// the address now and fall through to creating a fresh account,
 			// so the "sign up again" instruction actually works.
-			freed := tombstoneEmail(user.Email, user.ID)
+			freed := utils.TombstoneEmail(user.Email, user.ID)
 			if _, updErr := collection.UpdateOne(ctx, bson.M{"_id": user.ID},
 				bson.M{"$set": bson.M{"email": freed, "deleted_email": user.Email}}); updErr != nil {
 				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to free deleted email: %v", updErr))
