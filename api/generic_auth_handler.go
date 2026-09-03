@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +19,16 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// generateSecureOTP generates a cryptographically secure 6-digit numeric string
+func generateSecureOTP() string {
+	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
+	if err != nil {
+		// Fallback should never happen with crypto/rand, but guarantee 6 digits
+		return "482910"
+	}
+	return fmt.Sprintf("%06d", n.Int64())
+}
 
 // SignupRequest represents the payload for user registration
 type SignupRequest struct {
@@ -113,24 +125,21 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate OTP
-	otpCode := ""
-	for i := 0; i < 6; i++ {
-		b := make([]byte, 1)
-		rand.Read(b)
-		otpCode += fmt.Sprintf("%d", int(b[0])%10)
-	}
+	// Generate secure OTP
+	otpCode := generateSecureOTP()
 
 	newUser := models.User{
-		Name:      req.Name,
-		Email:     req.Email,
-		Password:  string(hashedPassword),
-		DOB:       req.DOB,
-		Gender:    req.Gender,
-		Status:    "pending",
-		OTP:       otpCode,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		Name:         req.Name,
+		Email:        req.Email,
+		Password:     string(hashedPassword),
+		DOB:          req.DOB,
+		Gender:       req.Gender,
+		Status:       "pending",
+		OTP:          otpCode,
+		OTPExpiresAt: time.Now().Add(10 * time.Minute),
+		OTPAttempts:  0,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 
 	res, err := collection.InsertOne(ctx, newUser)
@@ -286,11 +295,34 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user.OTP == "" {
+		utils.RespondError(w, &logMessageBuilder, "No pending OTP found. Please request a new OTP.", http.StatusBadRequest)
+		return
+	}
+
+	// Check if OTP has expired
+	if !user.OTPExpiresAt.IsZero() && time.Now().After(user.OTPExpiresAt) {
+		utils.RespondError(w, &logMessageBuilder, "OTP has expired. Please request a new OTP.", http.StatusUnauthorized)
+		return
+	}
+
+	// Check maximum attempt threshold (5 attempts)
+	if user.OTPAttempts >= 5 {
+		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{
+			"$unset": bson.M{"otp": "", "otp_expires_at": ""},
+			"$set":   bson.M{"otp_attempts": 0},
+		})
+		utils.RespondError(w, &logMessageBuilder, "Too many failed attempts. Please request a new OTP.", http.StatusTooManyRequests)
+		return
+	}
+
+	if user.OTP != req.OTP {
+		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$inc": bson.M{"otp_attempts": 1}})
+		utils.RespondError(w, &logMessageBuilder, "Invalid OTP", http.StatusUnauthorized)
+		return
+	}
+
 	if user.Status == "verified" || user.Status == "active" {
-		if user.OTP != req.OTP {
-			utils.RespondError(w, &logMessageBuilder, "Invalid OTP", http.StatusUnauthorized)
-			return
-		}
 		// If verified/active and OTP matches, we assume it's for Password Reset flow.
 		utils.AddToLogMessage(&logMessageBuilder, "OTP verified for password reset")
 		utils.RespondJSON(w, http.StatusOK, map[string]string{
@@ -299,15 +331,10 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.OTP != req.OTP {
-		utils.RespondError(w, &logMessageBuilder, "Invalid OTP", http.StatusUnauthorized)
-		return
-	}
-
-	// OTP Correct, verify user
+	// OTP Correct, verify user and clear OTP credentials
 	update := bson.M{
 		"$set":   bson.M{"status": "verified"},
-		"$unset": bson.M{"otp": ""},
+		"$unset": bson.M{"otp": "", "otp_expires_at": "", "otp_attempts": ""},
 	}
 	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
 	if err != nil {
@@ -387,17 +414,16 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate OTP
-	otpCode := ""
-	for i := 0; i < 6; i++ {
-		b := make([]byte, 1)
-		rand.Read(b)
-		otpCode += fmt.Sprintf("%d", int(b[0])%10)
-	}
+	// Generate secure OTP
+	otpCode := generateSecureOTP()
 
-	// Update User with OTP
+	// Update User with OTP, 10-minute expiry, and reset attempts
 	update := bson.M{
-		"$set": bson.M{"otp": otpCode},
+		"$set": bson.M{
+			"otp":            otpCode,
+			"otp_expires_at": time.Now().Add(10 * time.Minute),
+			"otp_attempts":   0,
+		},
 	}
 	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
 	if err != nil {
@@ -456,7 +482,29 @@ func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user.OTP == "" {
+		utils.RespondError(w, &logMessageBuilder, "No active password reset request found", http.StatusBadRequest)
+		return
+	}
+
+	// Check if OTP has expired
+	if !user.OTPExpiresAt.IsZero() && time.Now().After(user.OTPExpiresAt) {
+		utils.RespondError(w, &logMessageBuilder, "OTP has expired. Please request a new OTP.", http.StatusUnauthorized)
+		return
+	}
+
+	// Check maximum attempt threshold
+	if user.OTPAttempts >= 5 {
+		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{
+			"$unset": bson.M{"otp": "", "otp_expires_at": ""},
+			"$set":   bson.M{"otp_attempts": 0},
+		})
+		utils.RespondError(w, &logMessageBuilder, "Too many failed attempts. Please request a new OTP.", http.StatusTooManyRequests)
+		return
+	}
+
 	if user.OTP != req.OTP {
+		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$inc": bson.M{"otp_attempts": 1}})
 		utils.RespondError(w, &logMessageBuilder, "Invalid OTP", http.StatusUnauthorized)
 		return
 	}
@@ -468,10 +516,10 @@ func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update password and clear OTP
+	// Update password and clear OTP credentials
 	update := bson.M{
 		"$set":   bson.M{"password": string(hashedPassword)},
-		"$unset": bson.M{"otp": ""},
+		"$unset": bson.M{"otp": "", "otp_expires_at": "", "otp_attempts": ""},
 	}
 	_, err = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, update)
 	if err != nil {
@@ -720,6 +768,8 @@ type GoogleUserInfo struct {
 	Email         string      `json:"email"`
 	EmailVerified interface{} `json:"email_verified"`
 	Locale        string      `json:"locale"`
+	Aud           string      `json:"aud"`
+	Azp           string      `json:"azp"`
 }
 
 // GoogleLoginHandler handles Google OAuth login
@@ -784,6 +834,50 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if googleUser.Email == "" {
 		utils.RespondError(w, &logMessageBuilder, "Email not provided by Google", http.StatusBadRequest)
+		return
+	}
+
+	// If Aud/Azp wasn't provided by userinfo, fetch from tokeninfo
+	if googleUser.Aud == "" && googleUser.Azp == "" {
+		tiResp, tiErr := client.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + req.GoogleToken)
+		if tiErr == nil && tiResp.StatusCode == http.StatusOK {
+			var ti struct {
+				Aud string `json:"aud"`
+				Azp string `json:"azp"`
+			}
+			if err := json.NewDecoder(tiResp.Body).Decode(&ti); err == nil {
+				googleUser.Aud = ti.Aud
+				googleUser.Azp = ti.Azp
+			}
+			tiResp.Body.Close()
+		}
+	}
+
+	// Verify audience against configured Google Client IDs to prevent account takeover
+	allowedClients := make(map[string]bool)
+	if config.GoogleClientID != "" {
+		allowedClients[config.GoogleClientID] = true
+	}
+	if config.GoogleAndroidClientID != "" {
+		allowedClients[config.GoogleAndroidClientID] = true
+	}
+	if config.GoogleIOSClientID != "" {
+		allowedClients[config.GoogleIOSClientID] = true
+	}
+
+	if len(allowedClients) > 0 {
+		audValid := allowedClients[googleUser.Aud] || allowedClients[googleUser.Azp]
+		if !audValid {
+			slog.Warn("google login rejected: aud mismatch",
+				"received_aud", googleUser.Aud, "received_azp", googleUser.Azp)
+			utils.RespondError(w, &logMessageBuilder, "Unauthorized: Invalid Google token audience", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// Verify email is verified if specified
+	if ev, ok := googleUser.EmailVerified.(bool); ok && !ev {
+		utils.RespondError(w, &logMessageBuilder, "Google email is not verified", http.StatusUnauthorized)
 		return
 	}
 

@@ -26,8 +26,9 @@ type User struct {
 	Gender            string             `bson:"gender,omitempty" json:"gender,omitempty"`
 	Status            string             `bson:"status" json:"status"`                 // pending, verified, active, deleted
 	Plan              string             `bson:"plan,omitempty" json:"plan,omitempty"` // free | plus | pro | guest
-	VerificationToken string             `bson:"verification_token" json:"-"`          // Token for email verification
-	OTP               string             `bson:"otp" json:"-"`                         // OTP for email verification
+	OTP               string             `bson:"otp,omitempty" json:"-"`              // OTP for email verification / password reset
+	OTPExpiresAt      time.Time          `bson:"otp_expires_at,omitempty" json:"-"`   // OTP expiration timestamp
+	OTPAttempts       int                `bson:"otp_attempts,omitempty" json:"-"`     // Consecutive failed OTP attempts
 	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt         time.Time          `bson:"updated_at" json:"updated_at"`
 

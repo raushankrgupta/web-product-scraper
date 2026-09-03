@@ -6,12 +6,48 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	neturl "net/url"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
+
+// maxImageDownloadBytes bounds fetched images to prevent OOM / decompression bombs
+const maxImageDownloadBytes = 25 << 20 // 25 MiB
+
+// isPublicHTTPURL verifies that the URL has http/https scheme and does not resolve
+// to private, loopback, or cloud-metadata IP addresses (SSRF prevention).
+func isPublicHTTPURL(rawURL string) error {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q, only http and https are allowed", u.Scheme)
+	}
+	hostname := u.Hostname()
+	if hostname == "" {
+		return fmt.Errorf("missing hostname")
+	}
+
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return fmt.Errorf("failed to resolve host %q: %w", hostname, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("no IP addresses resolved for %q", hostname)
+	}
+
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("request to internal or private network IP %s is prohibited", ip.String())
+		}
+	}
+	return nil
+}
 
 // UploadImagesToS3 downloads images from URLs and uploads them to S3
 // Returns a map of Original URL -> S3 Object Key
@@ -67,7 +103,11 @@ func UploadImagesToS3(ctx context.Context, urls []string, folderPrefix string) (
 }
 
 func downloadAndUpload(ctx context.Context, url, objectKey string) error {
-	req, err := http.NewRequest("GET", url, nil)
+	if err := isPublicHTTPURL(url); err != nil {
+		return fmt.Errorf("ssrf check blocked url %q: %w", url, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
@@ -84,12 +124,13 @@ func downloadAndUpload(ctx context.Context, url, objectKey string) error {
 		return fmt.Errorf("bad status: %s", resp.Status)
 	}
 
-	// Read into buffer to upload (S3 UploadFileToS3 takes io.Reader, but PutObject requires seekable or known length?
-	// aws-sdk-go-v2 PutObject body is io.Reader. But helper might need length.
-	// We read to bytes to be safe and set Content-Type if possible.
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// Bound memory reading with LimitReader to avoid OOM crashes
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxImageDownloadBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(bodyBytes) > maxImageDownloadBytes {
+		return fmt.Errorf("image exceeds maximum allowed size of %d bytes", maxImageDownloadBytes)
 	}
 
 	contentType := resp.Header.Get("Content-Type")

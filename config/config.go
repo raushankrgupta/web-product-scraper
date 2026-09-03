@@ -12,9 +12,11 @@ import (
 var (
 	MongoURI           string
 	Port               string
-	GoogleClientID     string
-	GoogleClientSecret string
-	GoogleRedirectURL  string
+	GoogleClientID        string
+	GoogleAndroidClientID string
+	GoogleIOSClientID     string
+	GoogleClientSecret    string
+	GoogleRedirectURL     string
 	GeminiAPIKey       string
 	AWSRegion          string
 	AWSBucketName      string
@@ -147,6 +149,8 @@ func LoadConfig() {
 	}
 
 	GoogleClientID = os.Getenv("GOOGLE_CLIENT_ID")
+	GoogleAndroidClientID = os.Getenv("GOOGLE_ANDROID_CLIENT_ID")
+	GoogleIOSClientID = os.Getenv("GOOGLE_IOS_CLIENT_ID")
 	GoogleClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
 	GoogleRedirectURL = os.Getenv("GOOGLE_REDIRECT_URL")
 	if GoogleRedirectURL == "" {

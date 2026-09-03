@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	neturl "net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -428,8 +427,8 @@ const maxImageBytes = 25 << 20 // 25 MiB
 // parent Gemini deadline can cancel an in-flight download, and uses a client
 // with an explicit timeout (see imageFetchClient) rather than http.Get.
 func fetchImage(ctx context.Context, pathOrURL string) ([]byte, error) {
-	if !strings.HasPrefix(pathOrURL, "http") {
-		return os.ReadFile(pathOrURL)
+	if !strings.HasPrefix(pathOrURL, "http://") && !strings.HasPrefix(pathOrURL, "https://") {
+		return nil, fmt.Errorf("unsupported image URL scheme: only http and https are allowed")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pathOrURL, nil)

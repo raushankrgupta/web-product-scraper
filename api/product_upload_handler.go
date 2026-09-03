@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -83,7 +84,7 @@ func UploadProductHandler(w http.ResponseWriter, r *http.Request) {
 		Category:   "User Upload",
 	}
 
-	collection := utils.GetCollection("fitly", "products")
+	collection := utils.GetCollection(config.DBName, "products")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

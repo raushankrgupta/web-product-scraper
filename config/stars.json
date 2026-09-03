@@ -207,7 +207,7 @@
     "package_name": "com.raushan26.tryonfusion",
     "acknowledge_window_hours": 72,
     "_acknowledge_note": "Play auto-refunds a purchase that is not acknowledged/consumed within 3 days. We consume immediately on credit; this value only drives the staleness alert.",
-    "hold_expiry_minutes": 5,
+    "hold_expiry_minutes": 8,
     "_hold_note": "A reserved-but-uncommitted spend older than this is swept back to the user's balance. Must exceed the longest generation timeout above."
   }
 }

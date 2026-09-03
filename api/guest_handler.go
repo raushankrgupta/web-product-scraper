@@ -3,12 +3,65 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 )
+
+type guestRateLimiter struct {
+	sync.Mutex
+	history map[string][]time.Time
+}
+
+var guestLimiter = &guestRateLimiter{
+	history: make(map[string][]time.Time),
+}
+
+func (l *guestRateLimiter) allow(ip string, limit int, window time.Duration) bool {
+	l.Lock()
+	defer l.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-window)
+
+	var valid []time.Time
+	for _, t := range l.history[ip] {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= limit {
+		l.history[ip] = valid
+		return false
+	}
+
+	valid = append(valid, now)
+	l.history[ip] = valid
+	return true
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		return strings.TrimSpace(xrip)
+	}
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return ip
+	}
+	return r.RemoteAddr
+}
 
 // GuestTokenRequest is the body the mobile app sends to mint an anonymous
 // session. device_id is whatever stable identifier the client has (Expo's
@@ -22,12 +75,18 @@ type GuestTokenRequest struct {
 // in its claims so AuthMiddleware can route around the users-collection check
 // and apply the guest daily quota (1/day).
 //
-// Security note: this endpoint is intentionally public and trusts the device
-// to supply its own id. The 1-try-on/day quota is the rate-limit, not the
-// token itself. Don't expand guest powers without a server-side check.
+// Security note: rate-limited to 10 guest tokens per IP per hour to prevent
+// automated Sybil attacks draining Gemini credits with rotating fake device IDs.
 func GuestTokenHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		utils.RespondError(w, nil, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Rate limit: max 10 guest tokens per IP per hour
+	ip := clientIP(r)
+	if !guestLimiter.allow(ip, 10, time.Hour) {
+		utils.RespondError(w, nil, "Too many guest sessions requested from this network. Please sign up or try again later.", http.StatusTooManyRequests)
 		return
 	}
 

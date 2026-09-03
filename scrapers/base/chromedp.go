@@ -25,12 +25,20 @@ func (b *BaseScraper) FetchDocumentChromeDP(url string) (*goquery.Document, erro
 		chromePath = envPath
 	}
 
+	userDataDir, err := os.MkdirTemp("", "chromedp-userdata-*")
+	if err == nil {
+		defer os.RemoveAll(userDataDir)
+	} else {
+		userDataDir = fmt.Sprintf("/tmp/chrome-user-data-%d", time.Now().UnixNano())
+		defer os.RemoveAll(userDataDir)
+	}
+
 	// Set up browser options
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true), // Essential for Docker
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("user-data-dir", "/tmp/chrome-user-data"),
+		chromedp.Flag("user-data-dir", userDataDir),
 		chromedp.ExecPath(chromePath),
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"),
 	)
@@ -60,7 +68,7 @@ func (b *BaseScraper) FetchDocumentChromeDP(url string) (*goquery.Document, erro
 	}
 
 	var htmlContent string
-	err := chromedp.Run(taskCtx,
+	err = chromedp.Run(taskCtx,
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 		chromedp.Sleep(time.Duration(5+rand.Float64()*5)*time.Second), // Random delay

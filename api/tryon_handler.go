@@ -199,6 +199,10 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		utils.RespondError(w, &logMessageBuilder, "Product not found", http.StatusNotFound)
 		return
 	}
+	if product.Source == "user_upload" && product.UserID != "" && product.UserID != userIdStr {
+		utils.RespondError(w, &logMessageBuilder, "Unauthorized: You do not have access to this product", http.StatusForbidden)
+		return
+	}
 	utils.AddToLogMessage(&logMessageBuilder, "Product fetched from database")
 
 	// Short-window result cache. A user tapping "try on" twice on the same
