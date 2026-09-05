@@ -10,16 +10,39 @@ import (
 )
 
 var (
-	MongoURI           string
-	Port               string
-	GoogleClientID     string
-	GoogleClientSecret string
-	GoogleRedirectURL  string
-	GeminiAPIKey       string
-	AWSRegion          string
-	AWSBucketName      string
-	DBName             string
-	ContactEmail       string
+	MongoURI              string
+	Port                  string
+	GoogleClientID        string
+	GoogleAndroidClientID string
+	GoogleIOSClientID     string
+	GoogleClientSecret    string
+	GoogleRedirectURL     string
+	GeminiAPIKey          string
+
+	// --- Image generation providers ---
+	//
+	// OpenAI is a *fallback* for Gemini, not a product choice the user makes.
+	// The app sells Standard and Pro; which vendor renders them is an
+	// operational detail, which is why it lives here and in stars.json rather
+	// than anywhere the client can see.
+	OpenAIAPIKey string
+	// OpenAIEnabled is the master switch. Off means the provider list is
+	// exactly ["gemini"] and no OpenAI code path can be reached, whatever the
+	// preference says.
+	OpenAIEnabled bool
+	// ImageProviderPreference is which vendor to try FIRST: "gemini" or
+	// "openai". The other one becomes the fallback. Both tiers are priced so
+	// that either vendor clears the margin floor (tools/stars_check enforces
+	// it), so flipping this cannot make a generation unprofitable.
+	ImageProviderPreference string
+	// OpenAITimeoutSecs bounds a single OpenAI generation. Separate from the
+	// Gemini budgets in stars.json because a fallback runs inside whatever is
+	// left of the request, not with a fresh clock.
+	OpenAITimeoutSecs int
+	AWSRegion         string
+	AWSBucketName     string
+	DBName            string
+	ContactEmail      string
 
 	// ServerBScrapeURL is the full URL of the scraper-service (server B)
 	// internal endpoint, e.g. https://scraper-b.example.com/internal/scrape.
@@ -72,6 +95,30 @@ var (
 	// of the request deadline; see api.persistCtx.
 	S3UploadTimeoutSecs int
 
+	// --- Google Play billing (star purchases) ---
+	//
+	// Exactly one of these supplies the service-account credentials used to
+	// verify purchase tokens. JSON is the deployment-friendly form: the whole
+	// key sits in one env var, so nothing has to be mounted into the
+	// container. When neither is set, purchase verification is disabled and
+	// /billing/purchase refuses every request — refusing is the only safe
+	// default, because crediting an unverified token is free stars for
+	// anyone who can POST.
+	PlayServiceAccountJSON string
+	PlayServiceAccountFile string
+
+	// PlayRTDNToken is a shared secret appended to the Pub/Sub push endpoint
+	// as ?token=... . Google will happily push to any public URL, so without
+	// it anyone who finds the endpoint can forge a refund notification.
+	PlayRTDNToken string
+
+	// StarsIdentityPepper salts the SHA-256 of an email address before it is
+	// stored for returning-user detection. Without a pepper the hashes are a
+	// plain dictionary of every address that ever signed up; with one, the
+	// stored value is useless to anyone who does not also hold this secret.
+	// Changing it resets everyone to "new user" — treat it as permanent.
+	StarsIdentityPepper string
+
 	// AllowedOrigins is the CORS allow-list. Empty means "*" (the previous
 	// behaviour), which is kept as the default so an unconfigured deployment
 	// doesn't suddenly break the mobile app.
@@ -123,6 +170,8 @@ func LoadConfig() {
 	}
 
 	GoogleClientID = os.Getenv("GOOGLE_CLIENT_ID")
+	GoogleAndroidClientID = os.Getenv("GOOGLE_ANDROID_CLIENT_ID")
+	GoogleIOSClientID = os.Getenv("GOOGLE_IOS_CLIENT_ID")
 	GoogleClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
 	GoogleRedirectURL = os.Getenv("GOOGLE_REDIRECT_URL")
 	if GoogleRedirectURL == "" {
@@ -130,6 +179,34 @@ func LoadConfig() {
 	}
 
 	GeminiAPIKey = os.Getenv("GEMINI_API_KEY")
+
+	OpenAIAPIKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	// Default off, and forced off without a key: an enabled provider we cannot
+	// authenticate to would turn every fallback into a second wasted round
+	// trip on the critical path.
+	OpenAIEnabled = envBool("OPENAI_ENABLED", false) && OpenAIAPIKey != ""
+	if !OpenAIEnabled && OpenAIAPIKey != "" && envBool("OPENAI_ENABLED", false) {
+		log.Println("[config] OPENAI_ENABLED=true but OPENAI_API_KEY is empty — OpenAI disabled")
+	}
+
+	ImageProviderPreference = strings.ToLower(strings.TrimSpace(os.Getenv("IMAGE_PROVIDER_PREFERENCE")))
+	switch ImageProviderPreference {
+	case "", "gemini":
+		ImageProviderPreference = "gemini"
+	case "openai":
+		if !OpenAIEnabled {
+			// Preferring a disabled provider is a misconfiguration that would
+			// otherwise be silent: every generation would quietly run on the
+			// "fallback" and someone would wonder why the bill did not move.
+			log.Println("[config] IMAGE_PROVIDER_PREFERENCE=openai but OpenAI is disabled — preferring gemini")
+			ImageProviderPreference = "gemini"
+		}
+	default:
+		log.Printf("[config] IMAGE_PROVIDER_PREFERENCE=%q is not a known provider, using gemini", ImageProviderPreference)
+		ImageProviderPreference = "gemini"
+	}
+
+	OpenAITimeoutSecs = envInt("OPENAI_TIMEOUT_SECS", 90)
 
 	AWSRegion = os.Getenv("AWS_REGION")
 	if AWSRegion == "" {
@@ -186,6 +263,21 @@ func LoadConfig() {
 	GeminiTimeoutSecs = envInt("GEMINI_TIMEOUT_SECS", 45)
 	GeminiMultiTimeoutSecs = envInt("GEMINI_MULTI_TIMEOUT_SECS", 90)
 	S3UploadTimeoutSecs = envInt("S3_UPLOAD_TIMEOUT_SECS", 30)
+
+	PlayServiceAccountJSON = strings.TrimSpace(os.Getenv("PLAY_SERVICE_ACCOUNT_JSON"))
+	PlayServiceAccountFile = strings.TrimSpace(os.Getenv("PLAY_SERVICE_ACCOUNT_FILE"))
+	PlayRTDNToken = strings.TrimSpace(os.Getenv("PLAY_RTDN_TOKEN"))
+
+	StarsIdentityPepper = strings.TrimSpace(os.Getenv("STARS_IDENTITY_PEPPER"))
+	if StarsIdentityPepper == "" {
+		// Falling back to the JWT secret keeps returning-user detection
+		// working on a deployment that has not set a dedicated pepper, and
+		// is still not a plain unsalted hash. Logged so it is visible.
+		StarsIdentityPepper = os.Getenv("JWT_SECRET")
+		if StarsIdentityPepper != "" {
+			log.Println("[config] STARS_IDENTITY_PEPPER unset — falling back to JWT_SECRET")
+		}
+	}
 
 	AllowedOrigins = nil
 	for _, o := range strings.Split(os.Getenv("ALLOWED_ORIGINS"), ",") {

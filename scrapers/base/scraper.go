@@ -35,17 +35,29 @@ func NewBaseScraper() *BaseScraper {
 
 // FetchDocument fetches the URL using multiple strategies with a custom validator
 func (b *BaseScraper) FetchDocument(url string, validator func(*goquery.Document) bool) (*goquery.Document, error) {
+	// Each strategy's failure is carried into the final error rather than
+	// left in the breadcrumb lines below. Those go through the bare logger,
+	// so they have no request_id and can only be tied back to the request
+	// that failed by timestamp — which is no help once traffic is
+	// concurrent. "all strategies failed" on its own is equally unhelpful:
+	// a missing Chrome binary and a bot wall are the same sentence.
+	var reasons []string
+	note := func(strategy string, err error) {
+		reasons = append(reasons, fmt.Sprintf("%s: %v", strategy, err))
+	}
+
 	// Strategy 1: HTTP Client (Fastest)
 	doc, err := b.FetchDocumentHTTP(url)
 	if err == nil {
 		if validator(doc) {
 			slog.Info(fmt.Sprintf("[BaseScraper] HTTP Success: %s", url))
 			return doc, nil
-		} else {
-			slog.Info("[BaseScraper] HTTP yielded invalid content (validator failed), trying fallbacks...")
 		}
+		slog.Info("[BaseScraper] HTTP yielded invalid content (validator failed), trying fallbacks...")
+		note("http", fmt.Errorf("validator rejected content"))
 	} else {
 		slog.Info(fmt.Sprintf("[BaseScraper] HTTP Failed: %v", err))
+		note("http", err)
 	}
 
 	// Strategy 2: ChromeDP (Headless)
@@ -57,6 +69,9 @@ func (b *BaseScraper) FetchDocument(url string, validator func(*goquery.Document
 	}
 	if err != nil {
 		slog.Info(fmt.Sprintf("[BaseScraper] ChromeDP Failed: %v", err))
+		note("chromedp", err)
+	} else {
+		note("chromedp", fmt.Errorf("validator rejected content"))
 	}
 
 	// Strategy 3: Selenium (Full Browser)
@@ -68,9 +83,12 @@ func (b *BaseScraper) FetchDocument(url string, validator func(*goquery.Document
 	}
 	if err != nil {
 		slog.Info(fmt.Sprintf("[BaseScraper] Selenium Failed: %v", err))
+		note("selenium", err)
+	} else {
+		note("selenium", fmt.Errorf("validator rejected content"))
 	}
 
-	return nil, fmt.Errorf("all strategies failed for %s", url)
+	return nil, fmt.Errorf("all strategies failed for %s (%s)", url, strings.Join(reasons, "; "))
 }
 
 func isValidDocument(doc *goquery.Document) bool {

@@ -1,0 +1,241 @@
+{
+  "_readme": [
+    "Star economy configuration — the single source of truth for what a",
+    "generation costs, what a star costs, and what new users get for free.",
+    "",
+    "This file is embedded into the binary at build time (config/stars.go),",
+    "so a deploy always ships a valid config. To override without rebuilding,",
+    "set STARS_CONFIG_PATH to an external JSON file with the same shape.",
+    "",
+    "BEFORE CHANGING PRICES, READ 'economics' BELOW. The invariant that keeps",
+    "this business solvent is: stars_charged * min_star_value_inr * (1 - play_fee)",
+    "must exceed est_cost_usd * usd_inr by a healthy margin. Validate with:",
+    "    go run ./tools/stars_check",
+    "which fails loudly on any tier that is priced below its floor."
+  ],
+  "version": 3,
+  "updated_at": "2026-08-31",
+  "currency": "INR",
+  "economics": {
+    "_note": [
+      "Assumptions used by the margin checker. These are ESTIMATES — replace",
+      "est_cost_usd with your real per-image cost from the Google AI Studio /",
+      "Vertex billing console (last month's image spend divided by the number",
+      "of successful generations). Everything else is arithmetic."
+    ],
+    "usd_inr": 88,
+    "play_service_fee_pct": 15,
+    "min_margin_multiple": 1.25,
+    "target_margin_multiple": 2,
+    "_margin_note": [
+      "Both multiples compare NET revenue (after Play's service fee) against",
+      "raw model cost, evaluated at the CHEAPEST star rate — what a customer",
+      "on the biggest pack pays. That is the worst case for us.",
+      "",
+      "min_margin_multiple is a hard floor: tools/stars_check exits non-zero",
+      "below it, so CI blocks a repricing that leaves nothing for infra and",
+      "refunded failures. 1.25x means a generation that fails and gets",
+      "refunded roughly 20% of the time still breaks even.",
+      "",
+      "target_margin_multiple is advisory: below it you get a warning, not a",
+      "failure. 2.0x is where a tier stops being fragile.",
+      "",
+      "Current thin tier: individual/pro sits at ~1.44x. It clears the floor",
+      "but is the first thing to reprice if Gemini costs rise. Lever: raise",
+      "tiers.individual.pro from 25 to 35 stars for a comfortable 2.0x."
+    ]
+  },
+  "models": {
+    "_note": "Keys are the 'quality' values the API accepts. gemini_model is the literal model id sent to Google — update here, never in Go source.",
+    "_openai_note": [
+      "openai_model / openai_quality / openai_est_cost_usd describe the",
+      "FALLBACK vendor for a tier. They are only reached when OPENAI_ENABLED=true",
+      "(and are tried first when IMAGE_PROVIDER_PREFERENCE=openai).",
+      "",
+      "The user is charged the TIER price regardless of which vendor served the",
+      "request, so every vendor on a tier must independently clear the margin",
+      "floor. tools/stars_check checks both, and CI fails if either is below it.",
+      "That is the rule that stops a fallback quietly turning a profitable tier",
+      "into a loss-making one.",
+      "",
+      "openai_est_cost_usd INCLUDES an allowance for input tokens, unlike the",
+      "Gemini figure. A try-on is an edit: we send a person photo plus 1-3",
+      "garment references on every call, gpt-image-2 processes all of them at",
+      "high fidelity with no way to turn that down, and at $8/M input tokens",
+      "that is larger than the output cost on the cheap tier. Gemini charges",
+      "for inputs too, at $0.30/M, which rounds to nothing.",
+      "",
+      "Do NOT put gpt-image-2 at high quality here: it costs ~$0.211/image and",
+      "loses money against the 25-star Pro price. It is a new tier, not a",
+      "substitution. See docs/OPENAI_IMAGE_FALLBACK.md."
+    ],
+    "flash": {
+      "label": "Standard",
+      "tagline": "Fast · about 20 seconds",
+      "gemini_model": "gemini-2.5-flash-image",
+      "est_cost_usd": 0.039,
+      "timeout_secs": 45,
+      "multi_timeout_secs": 90,
+      "openai_model": "gpt-image-1-mini",
+      "openai_quality": "medium",
+      "openai_est_cost_usd": 0.024
+    },
+    "pro": {
+      "label": "Pro",
+      "tagline": "Sharper detail · about 35 seconds",
+      "gemini_model": "gemini-3-pro-image-preview",
+      "est_cost_usd": 0.134,
+      "timeout_secs": 90,
+      "multi_timeout_secs": 150,
+      "openai_model": "gpt-image-2",
+      "openai_quality": "medium",
+      "openai_est_cost_usd": 0.083
+    }
+  },
+  "default_quality": "flash",
+  "tiers": {
+    "_note": "Star cost per generation, keyed by try-on type then quality. Every type here must exist as a route; every quality must exist in 'models'.",
+    "individual": {
+      "flash": 10,
+      "pro": 25
+    },
+    "couple": {
+      "flash": 14,
+      "pro": 30
+    },
+    "group": {
+      "flash": 18,
+      "pro": 36
+    }
+  },
+  "packs": [
+    {
+      "_note": "product_id MUST match the in-app product id created in Play Console exactly. Changing it after launch orphans the SKU.",
+      "product_id": "stars_40",
+      "stars": 40,
+      "price_inr": 49,
+      "label": "Starter",
+      "badge": ""
+    },
+    {
+      "product_id": "stars_150",
+      "stars": 150,
+      "price_inr": 149,
+      "label": "Popular",
+      "badge": "MOST POPULAR"
+    },
+    {
+      "product_id": "stars_450",
+      "stars": 450,
+      "price_inr": 399,
+      "label": "Value",
+      "badge": "BEST VALUE"
+    },
+    {
+      "product_id": "stars_1000",
+      "stars": 1000,
+      "price_inr": 799,
+      "label": "Mega",
+      "badge": ""
+    }
+  ],
+  "free": {
+    "_note": [
+      "Free entitlements are NOT stars. They are a separate counter that can",
+      "only be spent on free_quality generations of a free_types kind, so a",
+      "welcome bonus can never be cashed out against an expensive Pro render.",
+      "",
+      "Spend order is fixed: daily_free first (it expires at midnight UTC",
+      "anyway), then welcome credits (never expire), then purchased stars.",
+      "",
+      "welcome_stars is the headline signup gift and is REAL currency: it",
+      "spends on any tier, including Pro and group. welcome_credits is the",
+      "older restricted counter, kept at 0 so the two do not stack. Both are",
+      "issued by the same idempotent grant, so switching between them is a",
+      "config change, not a code change."
+    ],
+    "welcome_stars": 100,
+    "returning_welcome_stars": 20,
+    "_welcome_stars_note": [
+      "100 stars buys 10 Standard individual try-ons or 4 Pro ones. At the",
+      "cheapest pack rate that is a real cost per signup — run",
+      "'go run ./tools/stars_check' after changing it, and watch the ratio of",
+      "signups to generations if you raise it further.",
+      "",
+      "NOTE the interaction with free.suppress_when_affordable: a user holding",
+      "100 stars is above the cheapest tier, so their daily free try-on is",
+      "paused until the balance falls back below stars_threshold. That is",
+      "intended — they are not short of generations — and the app explains it."
+    ],
+    "welcome_credits": 0,
+    "returning_welcome_credits": 0,
+    "_returning_note": "Applied when the signup email has been seen before (see identity.*). Deleting an account and re-registering therefore yields returning_welcome_stars, not the full grant.",
+    "daily_free_count": 1,
+    "guest_daily_free_count": 1,
+    "free_quality": "flash",
+    "free_types": [
+      "individual"
+    ],
+    "_free_types_note": "Free entitlements only cover these try-on types. couple/group always cost stars.",
+    "suppress_when_affordable": true,
+    "_suppress_note": "When true, a user holding enough stars to afford the cheapest generation gets no free entitlements. The threshold is computed from 'tiers', not hardcoded, so it stays correct when you reprice. Free usage resumes automatically once the balance drops below it."
+  },
+  "identity": {
+    "_note": [
+      "Returning-user detection. We store a SHA-256 of the normalised email",
+      "plus a server-side pepper (STARS_IDENTITY_PEPPER) — never the address",
+      "itself — so the record survives account deletion without retaining",
+      "readable personal data. Disclose this in your privacy policy under",
+      "'fraud prevention'."
+    ],
+    "enabled": true,
+    "normalise_gmail_dots": true,
+    "_normalise_note": "Treats r.k.gupta@gmail.com, rkgupta@gmail.com and rkgupta+anything@gmail.com as one identity, and folds googlemail.com into gmail.com. Google genuinely routes all of those to a single inbox, so counting them as separate users turns the welcome bonus into a free vending machine. Applied to gmail.com / googlemail.com only — dot-insensitivity is not safe to assume for other providers."
+  },
+  "rewards": {
+    "_note": [
+      "Earned stars. Everything here is issued server-side and recorded in",
+      "star_ledger, so a granted star is indistinguishable from a bought one",
+      "at spend time but fully traceable in support.",
+      "",
+      "Every reward below is structurally one-shot: the guard is a unique",
+      "index on a peppered email hash, not a boolean someone has to remember",
+      "to check. That is what makes delete-and-rejoin useless as a way to",
+      "farm them."
+    ],
+    "referral": {
+      "enabled": true,
+      "referrer_stars": 50,
+      "referee_stars": 50,
+      "_stars_note": "The referee also receives free.welcome_stars, so a referred signup lands on 150 and costs us 200 including the referrer's cut.",
+      "code_length": 7,
+      "max_redemptions_per_referrer": 100,
+      "_max_note": "A cap on how many referrals one account can be paid for. Not a fraud control on its own — it is the blast radius when someone finds a way around the identity hash.",
+      "redeem_window_hours": 168,
+      "_window_note": "A code can only be redeemed within this long after the redeeming account was created. Referrals are an acquisition channel, not a coupon existing users hand each other."
+    },
+    "review": {
+      "enabled": true,
+      "stars": 50,
+      "_policy_note": [
+        "Google Play's Developer Program Policy forbids incentivising the",
+        "RATING. This reward is therefore for leaving a review at all, and",
+        "the app copy must never ask for five stars or condition the grant",
+        "on the score. Do not change the wording without re-reading that",
+        "policy — an incentivised-ratings strike removes the listing.",
+        "",
+        "No store exposes an API that proves a given user left a review, so",
+        "this is an honour-system grant. It is bounded instead of verified:",
+        "one grant per email identity, ever, worth review.stars."
+      ]
+    }
+  },
+  "billing": {
+    "_note": "Google Play consumable purchase handling.",
+    "package_name": "com.raushan26.tryonfusion",
+    "acknowledge_window_hours": 72,
+    "_acknowledge_note": "Play auto-refunds a purchase that is not acknowledged/consumed within 3 days. We consume immediately on credit; this value only drives the staleness alert.",
+    "hold_expiry_minutes": 8,
+    "_hold_note": "A reserved-but-uncommitted spend older than this is swept back to the user's balance. Must exceed the longest generation timeout above."
+  }
+}

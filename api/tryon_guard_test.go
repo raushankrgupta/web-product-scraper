@@ -216,7 +216,7 @@ func TestTryOnGuardSkipsMultipart(t *testing.T) {
 func TestResultCacheRoundTrip(t *testing.T) {
 	resetGuards()
 
-	key := tryOnCacheKey("u1", "p1", "prod1", "")
+	key := tryOnCacheKey("u1", "p1", "prod1", "", "")
 	if _, ok := lookupTryOnResult(key); ok {
 		t.Fatal("empty cache returned a hit")
 	}
@@ -229,15 +229,22 @@ func TestResultCacheRoundTrip(t *testing.T) {
 	}
 
 	// A different user must not hit another user's cached result.
-	if _, ok := lookupTryOnResult(tryOnCacheKey("u2", "p1", "prod1", "")); ok {
+	if _, ok := lookupTryOnResult(tryOnCacheKey("u2", "p1", "prod1", "", "")); ok {
 		t.Error("cache leaked a result across users")
+	}
+
+	// Nor may a different styling note. "Same person, same garment, but on a
+	// rooftop at night" is a different image, and serving the cached daylight
+	// one would look like the note was ignored.
+	if _, ok := lookupTryOnResult(tryOnCacheKey("u1", "p1", "prod1", "", "on a rooftop at night")); ok {
+		t.Error("cache ignored the special request when keying a result")
 	}
 }
 
 func TestResultCacheExpires(t *testing.T) {
 	resetGuards()
 
-	key := tryOnCacheKey("u1", "p1", "prod1", "")
+	key := tryOnCacheKey("u1", "p1", "prod1", "", "")
 	resultsMu.Lock()
 	results[key] = cachedResult{objectKey: "old.jpg", at: time.Now().Add(-resultCacheTTL - time.Minute)}
 	resultsMu.Unlock()

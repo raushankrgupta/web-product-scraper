@@ -1,0 +1,611 @@
+package config
+
+import (
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math"
+	"os"
+	"sort"
+	"strings"
+)
+
+// starsJSON is compiled into the binary so a deploy can never ship without a
+// star configuration. An external file (STARS_CONFIG_PATH) overrides it, which
+// is how you reprice without a rebuild.
+//
+//go:embed stars.json
+var starsJSON []byte
+
+// Stars is the process-wide star economy. Populated by LoadStars during boot,
+// before any handler is registered. Read-only afterwards.
+var Stars *StarConfig
+
+// StarConfig mirrors config/stars.json. Fields prefixed with `_` in the JSON
+// are documentation for whoever edits the file and are deliberately not
+// mapped here.
+type StarConfig struct {
+	Version   int    `json:"version"`
+	UpdatedAt string `json:"updated_at"`
+	Currency  string `json:"currency"`
+
+	Economics StarEconomics             `json:"economics"`
+	Models    map[string]StarModel      `json:"models"`
+	Tiers     map[string]map[string]int `json:"tiers"`
+	Packs     []StarPack                `json:"packs"`
+	Free      StarFreeRules             `json:"free"`
+	Rewards   StarRewardRules           `json:"rewards"`
+	Identity  StarIdentityRules         `json:"identity"`
+	Billing   StarBillingRules          `json:"billing"`
+
+	DefaultQuality string `json:"default_quality"`
+
+	// cheapestTier is derived, not configured: the smallest star cost across
+	// every (type, quality) pair. It is the threshold at which free
+	// entitlements are suppressed, so it must track repricing automatically.
+	cheapestTier int
+}
+
+// UnmarshalJSON decodes the config, skipping any map key that begins with an
+// underscore. Those keys are editor-facing notes in config/stars.json — they
+// sit inside `models` and `tiers` so that a price and its justification can
+// never drift into separate files.
+func (s *StarConfig) UnmarshalJSON(b []byte) error {
+	type alias StarConfig // avoids recursing into this method
+	var wire struct {
+		alias
+		Models map[string]json.RawMessage `json:"models"`
+		Tiers  map[string]json.RawMessage `json:"tiers"`
+	}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return err
+	}
+	*s = StarConfig(wire.alias)
+
+	s.Models = make(map[string]StarModel, len(wire.Models))
+	for name, raw := range wire.Models {
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		var m StarModel
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return fmt.Errorf("model %q: %w", name, err)
+		}
+		s.Models[name] = m
+	}
+
+	s.Tiers = make(map[string]map[string]int, len(wire.Tiers))
+	for name, raw := range wire.Tiers {
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		var t map[string]int
+		if err := json.Unmarshal(raw, &t); err != nil {
+			return fmt.Errorf("tier %q: %w", name, err)
+		}
+		s.Tiers[name] = t
+	}
+	return nil
+}
+
+// StarEconomics holds the assumptions the margin checker reasons about. None
+// of it affects runtime behaviour — it exists so that a price change and the
+// justification for it live in the same file.
+type StarEconomics struct {
+	USDINR            float64 `json:"usd_inr"`
+	PlayServiceFeePct float64 `json:"play_service_fee_pct"`
+	// MinMarginMultiple is a hard floor — tools/stars_check fails below it.
+	// TargetMarginMultiple is advisory and only warns. Both compare net
+	// revenue (after Play's fee) to raw model cost at the cheapest star rate.
+	MinMarginMultiple    float64 `json:"min_margin_multiple"`
+	TargetMarginMultiple float64 `json:"target_margin_multiple"`
+}
+
+// StarModel maps a quality name the API accepts onto a literal Gemini model
+// id plus its generation budget.
+type StarModel struct {
+	Label            string  `json:"label"`
+	Tagline          string  `json:"tagline"`
+	GeminiModel      string  `json:"gemini_model"`
+	EstCostUSD       float64 `json:"est_cost_usd"`
+	TimeoutSecs      int     `json:"timeout_secs"`
+	MultiTimeoutSecs int     `json:"multi_timeout_secs"`
+
+	// The OpenAI fallback for this tier. Empty means the tier is Gemini-only,
+	// which is a valid configuration — a tier with no fallback simply fails
+	// the way it always did.
+	//
+	// OpenAIEstCostUSD includes an input-token allowance; EstCostUSD (Gemini)
+	// does not, because Gemini's input rate rounds to nothing at our sizes.
+	// See the _openai_note in stars.json.
+	OpenAIModel      string  `json:"openai_model"`
+	OpenAIQuality    string  `json:"openai_quality"`
+	OpenAIEstCostUSD float64 `json:"openai_est_cost_usd"`
+}
+
+// HasOpenAI reports whether this tier has a configured fallback vendor.
+func (m StarModel) HasOpenAI() bool { return m.OpenAIModel != "" }
+
+// StarPack is one purchasable bundle. ProductID must match the in-app product
+// id in Play Console byte for byte.
+type StarPack struct {
+	ProductID string `json:"product_id"`
+	Stars     int    `json:"stars"`
+	PriceINR  int    `json:"price_inr"`
+	Label     string `json:"label"`
+	Badge     string `json:"badge"`
+}
+
+// StarFreeRules describes what a user gets without paying.
+//
+// Two currencies live here on purpose. WelcomeStars is real spendable
+// currency — it covers any tier, including Pro and group. WelcomeCredits is
+// the older restricted counter that only buys FreeQuality generations of a
+// FreeTypes kind. Both are issued by the same idempotent grant, so moving the
+// signup gift between them is a config change rather than a code change.
+type StarFreeRules struct {
+	WelcomeStars          int `json:"welcome_stars"`
+	ReturningWelcomeStars int `json:"returning_welcome_stars"`
+
+	WelcomeCredits          int      `json:"welcome_credits"`
+	ReturningWelcomeCredits int      `json:"returning_welcome_credits"`
+	DailyFreeCount          int      `json:"daily_free_count"`
+	GuestDailyFreeCount     int      `json:"guest_daily_free_count"`
+	FreeQuality             string   `json:"free_quality"`
+	FreeTypes               []string `json:"free_types"`
+	SuppressWhenAffordable  bool     `json:"suppress_when_affordable"`
+}
+
+// StarRewardRules configures the stars a user can earn without paying.
+type StarRewardRules struct {
+	Referral StarReferralRules `json:"referral"`
+	Review   StarReviewRules   `json:"review"`
+}
+
+// StarReferralRules configures the share-a-code programme.
+//
+// RefereeStars is *on top of* Free.WelcomeStars: a referred signup receives
+// both, so the true acquisition cost of one referral is
+// WelcomeStars + RefereeStars + ReferrerStars.
+type StarReferralRules struct {
+	Enabled       bool `json:"enabled"`
+	ReferrerStars int  `json:"referrer_stars"`
+	RefereeStars  int  `json:"referee_stars"`
+
+	// CodeLength is the number of characters in a generated code, drawn from
+	// an unambiguous alphabet (no O/0, I/1) so a code read aloud or copied by
+	// hand still resolves.
+	CodeLength int `json:"code_length"`
+
+	// MaxRedemptionsPerReferrer caps how many referrals one account is paid
+	// for. Not a fraud control on its own — it is the blast radius if someone
+	// gets around the identity hash.
+	MaxRedemptionsPerReferrer int `json:"max_redemptions_per_referrer"`
+
+	// RedeemWindowHours limits redemption to accounts created recently.
+	// Referrals are an acquisition channel, not a coupon existing users pass
+	// around between themselves.
+	RedeemWindowHours int `json:"redeem_window_hours"`
+}
+
+// StarReviewRules configures the store-review reward.
+//
+// Deliberately has no "minimum rating" field. Google Play's Developer Program
+// Policy forbids incentivising the rating itself, so the grant is for leaving
+// a review at all and must never be conditioned on the score — adding such a
+// field here is the first step to a listing takedown.
+type StarReviewRules struct {
+	Enabled bool `json:"enabled"`
+	Stars   int  `json:"stars"`
+}
+
+// StarIdentityRules configures returning-user detection.
+type StarIdentityRules struct {
+	Enabled            bool `json:"enabled"`
+	NormaliseGmailDots bool `json:"normalise_gmail_dots"`
+}
+
+// StarBillingRules configures Google Play consumable handling.
+type StarBillingRules struct {
+	PackageName            string `json:"package_name"`
+	AcknowledgeWindowHours int    `json:"acknowledge_window_hours"`
+	HoldExpiryMinutes      int    `json:"hold_expiry_minutes"`
+}
+
+// LoadStars parses the star configuration and installs it as config.Stars.
+//
+// It returns an error rather than logging and continuing, and main.go treats
+// that as fatal. Every other config value in this package degrades to a
+// default when it is wrong; this one must not. A typo that makes a Pro
+// generation cost 1 star instead of 25 is a silent, uncapped bill.
+func LoadStars() error {
+	raw := starsJSON
+	source := "embedded"
+
+	if path := strings.TrimSpace(os.Getenv("STARS_CONFIG_PATH")); path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("STARS_CONFIG_PATH=%q could not be read: %w", path, err)
+		}
+		raw, source = b, path
+	}
+
+	var sc StarConfig
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	if err := dec.Decode(&sc); err != nil {
+		return fmt.Errorf("parse star config (%s): %w", source, err)
+	}
+
+	if err := sc.validate(); err != nil {
+		return fmt.Errorf("invalid star config (%s): %w", source, err)
+	}
+
+	Stars = &sc
+	slog.Info("star config loaded",
+		"source", source, "version", sc.Version, "updated_at", sc.UpdatedAt,
+		"packs", len(sc.Packs), "cheapest_tier_stars", sc.cheapestTier)
+	return nil
+}
+
+// validate rejects any configuration that could charge the wrong amount,
+// reference a model that does not exist, or credit a pack twice.
+func (s *StarConfig) validate() error {
+	if len(s.Models) == 0 {
+		return fmt.Errorf("no models defined")
+	}
+	for name, m := range s.Models {
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		if m.GeminiModel == "" {
+			return fmt.Errorf("model %q has no gemini_model", name)
+		}
+		if m.TimeoutSecs <= 0 || m.MultiTimeoutSecs <= 0 {
+			return fmt.Errorf("model %q has a non-positive timeout", name)
+		}
+		if m.OpenAIModel != "" {
+			// A fallback priced at zero would sail through the margin check
+			// and hide a real cost, which is the one thing the check exists
+			// to prevent.
+			if m.OpenAIEstCostUSD <= 0 {
+				return fmt.Errorf("model %q has openai_model %q but no openai_est_cost_usd", name, m.OpenAIModel)
+			}
+			switch m.OpenAIQuality {
+			case "low", "medium", "high":
+			case "":
+				return fmt.Errorf("model %q has openai_model %q but no openai_quality", name, m.OpenAIModel)
+			default:
+				return fmt.Errorf("model %q has openai_quality %q; must be low, medium or high", name, m.OpenAIQuality)
+			}
+		}
+	}
+
+	if _, ok := s.Models[s.DefaultQuality]; !ok {
+		return fmt.Errorf("default_quality %q is not a defined model", s.DefaultQuality)
+	}
+
+	if len(s.Tiers) == 0 {
+		return fmt.Errorf("no tiers defined")
+	}
+	s.cheapestTier = math.MaxInt32
+	for tryOnType, byQuality := range s.Tiers {
+		if strings.HasPrefix(tryOnType, "_") {
+			continue
+		}
+		for quality, cost := range byQuality {
+			if _, ok := s.Models[quality]; !ok {
+				return fmt.Errorf("tier %s.%s references unknown quality %q", tryOnType, quality, quality)
+			}
+			if cost <= 0 {
+				return fmt.Errorf("tier %s.%s costs %d stars; must be positive", tryOnType, quality, cost)
+			}
+			if cost < s.cheapestTier {
+				s.cheapestTier = cost
+			}
+		}
+	}
+	if s.cheapestTier == math.MaxInt32 {
+		return fmt.Errorf("tiers block contained no usable entries")
+	}
+
+	if len(s.Packs) == 0 {
+		return fmt.Errorf("no packs defined")
+	}
+	seen := map[string]bool{}
+	for _, p := range s.Packs {
+		if p.ProductID == "" {
+			return fmt.Errorf("pack %q has no product_id", p.Label)
+		}
+		if seen[p.ProductID] {
+			return fmt.Errorf("duplicate pack product_id %q", p.ProductID)
+		}
+		seen[p.ProductID] = true
+		if p.Stars <= 0 || p.PriceINR <= 0 {
+			return fmt.Errorf("pack %q has a non-positive stars or price", p.ProductID)
+		}
+	}
+
+	if _, ok := s.Models[s.Free.FreeQuality]; !ok {
+		return fmt.Errorf("free.free_quality %q is not a defined model", s.Free.FreeQuality)
+	}
+	for _, t := range s.Free.FreeTypes {
+		if _, ok := s.Tiers[t]; !ok {
+			return fmt.Errorf("free.free_types references unknown try-on type %q", t)
+		}
+	}
+	if s.Free.WelcomeCredits < 0 || s.Free.ReturningWelcomeCredits < 0 || s.Free.DailyFreeCount < 0 {
+		return fmt.Errorf("free entitlements cannot be negative")
+	}
+	if s.Free.WelcomeStars < 0 || s.Free.ReturningWelcomeStars < 0 {
+		return fmt.Errorf("welcome star grants cannot be negative")
+	}
+	// A returning grant larger than the first-time one inverts the entire
+	// anti-farming rule: deleting the account would become the profitable move.
+	if s.Free.ReturningWelcomeStars > s.Free.WelcomeStars {
+		return fmt.Errorf("free.returning_welcome_stars (%d) exceeds free.welcome_stars (%d), which rewards delete-and-rejoin",
+			s.Free.ReturningWelcomeStars, s.Free.WelcomeStars)
+	}
+
+	if err := s.validateRewards(); err != nil {
+		return err
+	}
+
+	if s.Billing.PackageName == "" {
+		return fmt.Errorf("billing.package_name is required")
+	}
+	if s.Billing.HoldExpiryMinutes <= 0 {
+		return fmt.Errorf("billing.hold_expiry_minutes must be positive")
+	}
+	// A hold that expires before the generation it is holding for would let a
+	// user spend the same stars twice on two slow requests.
+	longest := 0
+	for _, m := range s.Models {
+		if m.MultiTimeoutSecs > longest {
+			longest = m.MultiTimeoutSecs
+		}
+	}
+	if s.Billing.HoldExpiryMinutes*60 <= longest {
+		return fmt.Errorf("billing.hold_expiry_minutes (%dm) must exceed the longest generation timeout (%ds)",
+			s.Billing.HoldExpiryMinutes, longest)
+	}
+
+	return nil
+}
+
+// validateRewards rejects a reward configuration that could be farmed or that
+// silently pays nothing.
+//
+// Split out of validate() because these are the values a growth experiment
+// edits most often, and a mistake here is spent money rather than a crash.
+func (s *StarConfig) validateRewards() error {
+	r := s.Rewards.Referral
+	if r.Enabled {
+		if r.ReferrerStars < 0 || r.RefereeStars < 0 {
+			return fmt.Errorf("referral star grants cannot be negative")
+		}
+		if r.ReferrerStars == 0 && r.RefereeStars == 0 {
+			return fmt.Errorf("rewards.referral is enabled but pays nobody; set referrer_stars or referee_stars, or disable it")
+		}
+		// Below 5 characters the code space is small enough to enumerate,
+		// and every hit is free stars.
+		if r.CodeLength < 5 || r.CodeLength > 12 {
+			return fmt.Errorf("rewards.referral.code_length must be 5-12, got %d", r.CodeLength)
+		}
+		if r.MaxRedemptionsPerReferrer <= 0 {
+			return fmt.Errorf("rewards.referral.max_redemptions_per_referrer must be positive")
+		}
+		if r.RedeemWindowHours <= 0 {
+			return fmt.Errorf("rewards.referral.redeem_window_hours must be positive")
+		}
+	}
+
+	if v := s.Rewards.Review; v.Enabled {
+		if v.Stars <= 0 {
+			return fmt.Errorf("rewards.review is enabled but grants %d stars", v.Stars)
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------- accessors
+
+// TierCost returns the star price of one generation. ok is false for an
+// unknown type/quality combination, which callers must treat as a 400 rather
+// than as "free".
+func (s *StarConfig) TierCost(tryOnType, quality string) (int, bool) {
+	byQuality, ok := s.Tiers[tryOnType]
+	if !ok {
+		return 0, false
+	}
+	cost, ok := byQuality[quality]
+	if !ok || cost <= 0 {
+		return 0, false
+	}
+	return cost, true
+}
+
+// Model resolves a quality name to its model definition.
+func (s *StarConfig) Model(quality string) (StarModel, bool) {
+	m, ok := s.Models[quality]
+	return m, ok
+}
+
+// GeminiModelFor returns the literal model id for a quality, falling back to
+// the default quality's model. The fallback is deliberate: an unrecognised
+// quality should never escalate a user to the expensive model.
+func (s *StarConfig) GeminiModelFor(quality string) string {
+	if m, ok := s.Models[quality]; ok {
+		return m.GeminiModel
+	}
+	return s.Models[s.DefaultQuality].GeminiModel
+}
+
+// OpenAIModelFor returns the fallback model id and its quality setting for a
+// tier, or ok=false when the tier has no fallback configured.
+func (s *StarConfig) OpenAIModelFor(quality string) (model, openaiQuality string, ok bool) {
+	m, found := s.Models[quality]
+	if !found || m.OpenAIModel == "" {
+		return "", "", false
+	}
+	return m.OpenAIModel, m.OpenAIQuality, true
+}
+
+// NormaliseQuality maps user input onto a known quality, defaulting rather
+// than erroring. Same reasoning as GeminiModelFor: default down, never up.
+func (s *StarConfig) NormaliseQuality(quality string) string {
+	q := strings.ToLower(strings.TrimSpace(quality))
+	if _, ok := s.Models[q]; ok {
+		return q
+	}
+	return s.DefaultQuality
+}
+
+// CheapestTierStars is the star cost of the least expensive generation
+// available. Free entitlements are suppressed at or above this balance —
+// a user who can afford to generate is not shown a free try-on.
+func (s *StarConfig) CheapestTierStars() int { return s.cheapestTier }
+
+// PackByProductID looks up a pack by its Play product id. Purchases for an
+// unknown id are rejected rather than credited with a guess.
+func (s *StarConfig) PackByProductID(id string) (StarPack, bool) {
+	for _, p := range s.Packs {
+		if p.ProductID == id {
+			return p, true
+		}
+	}
+	return StarPack{}, false
+}
+
+// FreeCovers reports whether free entitlements may be spent on this
+// combination. couple/group and Pro quality always cost stars.
+func (s *StarConfig) FreeCovers(tryOnType, quality string) bool {
+	if quality != s.Free.FreeQuality {
+		return false
+	}
+	for _, t := range s.Free.FreeTypes {
+		if t == tryOnType {
+			return true
+		}
+	}
+	return false
+}
+
+// SortedPacks returns packs cheapest-first, which is the order the store
+// screen renders them in.
+func (s *StarConfig) SortedPacks() []StarPack {
+	out := append([]StarPack(nil), s.Packs...)
+	sort.Slice(out, func(i, j int) bool { return out[i].PriceINR < out[j].PriceINR })
+	return out
+}
+
+// MinStarValueINR is the rupee value of one star in the *cheapest* pack — the
+// rate a whale pays. Margins must be computed against this, never against the
+// headline ₹1/star, or the biggest customers become the least profitable.
+func (s *StarConfig) MinStarValueINR() float64 {
+	min := math.MaxFloat64
+	for _, p := range s.Packs {
+		if v := float64(p.PriceINR) / float64(p.Stars); v < min {
+			min = v
+		}
+	}
+	if min == math.MaxFloat64 {
+		return 0
+	}
+	return min
+}
+
+// TierMargin reports the per-generation economics of one tier at the worst
+// (cheapest) star rate. Used by tools/stars_check and the /billing/economics
+// debug endpoint; never on a request path.
+type TierMargin struct {
+	Type    string
+	Quality string
+	// Provider is which vendor this row costs out. A tier with a fallback
+	// produces one row per vendor, because the customer pays the same number
+	// of stars whichever one serves the request — so both have to clear the
+	// floor independently. Checking only the primary is how a fallback turns
+	// a profitable tier into a loss-making one without anyone noticing.
+	Provider  string
+	Model     string
+	Stars     int
+	GrossINR  float64
+	NetINR    float64 // after Play's service fee
+	CostINR   float64
+	MarginINR float64
+	// Multiple is net revenue divided by model cost — the headline number.
+	Multiple float64
+	// MinStars / TargetStars are the star prices that would achieve the hard
+	// floor and the advisory target respectively.
+	MinStars    int
+	TargetStars int
+	BelowMin    bool
+	BelowTarget bool
+}
+
+// Margins computes TierMargin for every configured tier.
+func (s *StarConfig) Margins() []TierMargin {
+	starValue := s.MinStarValueINR()
+	keep := 1 - s.Economics.PlayServiceFeePct/100
+
+	var out []TierMargin
+	for tryOnType, byQuality := range s.Tiers {
+		if strings.HasPrefix(tryOnType, "_") {
+			continue
+		}
+		for quality, stars := range byQuality {
+			m, ok := s.Models[quality]
+			if !ok {
+				continue
+			}
+
+			gross := float64(stars) * starValue
+			net := gross * keep
+
+			row := func(provider, model string, costUSD float64) TierMargin {
+				cost := costUSD * s.Economics.USDINR
+
+				// Stars needed so that net revenue >= multiple x cost.
+				starsFor := func(mult float64) int {
+					if starValue <= 0 || keep <= 0 || mult <= 0 {
+						return 0
+					}
+					return int(math.Ceil(cost * mult / (starValue * keep)))
+				}
+				minStars := starsFor(s.Economics.MinMarginMultiple)
+				targetStars := starsFor(s.Economics.TargetMarginMultiple)
+
+				multiple := 0.0
+				if cost > 0 {
+					multiple = net / cost
+				}
+
+				return TierMargin{
+					Type: tryOnType, Quality: quality,
+					Provider: provider, Model: model, Stars: stars,
+					GrossINR: gross, NetINR: net, CostINR: cost,
+					MarginINR: net - cost, Multiple: multiple,
+					MinStars: minStars, TargetStars: targetStars,
+					BelowMin:    stars < minStars,
+					BelowTarget: stars < targetStars,
+				}
+			}
+
+			out = append(out, row("gemini", m.GeminiModel, m.EstCostUSD))
+			if m.HasOpenAI() {
+				out = append(out, row("openai",
+					m.OpenAIModel+" ("+m.OpenAIQuality+")", m.OpenAIEstCostUSD))
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Type != out[j].Type {
+			return out[i].Type < out[j].Type
+		}
+		if out[i].Quality != out[j].Quality {
+			return out[i].Quality < out[j].Quality
+		}
+		return out[i].Provider < out[j].Provider
+	})
+	return out
+}

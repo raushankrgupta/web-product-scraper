@@ -69,8 +69,35 @@ func UploadFileToS3(ctx context.Context, file io.Reader, objectKey string, conte
 	return objectKey, nil
 }
 
-// GetPresignedURL generates a presigned URL for an object
+// Presigned URL lifetimes.
+//
+// The rule these encode: a signature must outlive every cache that can hold
+// the JSON carrying it. Get that backwards and the response survives longer
+// than its own links — the client replays a perfectly valid cached payload
+// full of URLs that S3 now answers with 403, and every image silently goes
+// blank. That is exactly what happened to the theme grid, which was served
+// with `Cache-Control: max-age=2592000, immutable` (30 days) while its URLs
+// expired after an hour.
+const (
+	// PresignShort is for URLs consumed immediately by the server itself —
+	// fetching a reference image for a generation, say. Nothing caches these.
+	PresignShort = 1 * time.Hour
+
+	// PresignCatalog is for URLs that travel to a client inside a cacheable
+	// listing. AWS SigV4 caps a presigned URL at 7 days; 6 leaves a day of
+	// headroom, and every listing that uses this must be cached for less.
+	PresignCatalog = 6 * 24 * time.Hour
+)
+
+// GetPresignedURL generates a presigned URL valid for PresignShort.
 func GetPresignedURL(ctx context.Context, objectKey string) (string, error) {
+	return GetPresignedURLWithExpiry(ctx, objectKey, PresignShort)
+}
+
+// GetPresignedURLWithExpiry generates a presigned URL with an explicit
+// lifetime. Callers whose response is cached must pass one that comfortably
+// exceeds that cache's max-age — see the constants above.
+func GetPresignedURLWithExpiry(ctx context.Context, objectKey string, expiry time.Duration) (string, error) {
 	if PresignClient == nil {
 		if err := InitS3(); err != nil {
 			return "", err
@@ -84,7 +111,7 @@ func GetPresignedURL(ctx context.Context, objectKey string) (string, error) {
 	request, err := PresignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(appConfig.AWSBucketName),
 		Key:    aws.String(objectKey),
-	}, s3.WithPresignExpires(1*time.Hour))
+	}, s3.WithPresignExpires(expiry))
 	if err != nil {
 		return "", fmt.Errorf("failed to sign request: %v", err)
 	}

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -25,8 +24,9 @@ const (
 )
 
 // CachedResultHeader marks a try-on response that was served from the
-// in-process result cache rather than generated. QuotaMiddleware reads it and
-// skips the counter bump.
+// in-process result cache rather than generated. StarGateMiddleware reads it
+// and refunds the hold: a response that cost us no upstream call must not
+// cost the user any stars.
 const CachedResultHeader = "X-TryOn-Cached"
 
 // AuthMiddleware validates JWT token and injects user_id, plan, and guest flag
@@ -151,60 +151,8 @@ func IsGuestFromContext(ctx context.Context) bool {
 	return v
 }
 
-// QuotaMiddleware enforces the daily try-on cap before the handler runs and
-// increments the counter after a successful (2xx) response. Wrap it inside
-// AuthMiddleware so user_id / plan are already in context.
-func QuotaMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userID, err := GetUserIDFromContext(r.Context())
-		if err != nil {
-			utils.RespondJSON(w, http.StatusUnauthorized, map[string]string{"error": "Please sign in again to continue."})
-			return
-		}
-		plan := GetUserPlanFromContext(r.Context())
-
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-
-		status, err := utils.GetTryOnQuotaStatus(ctx, userID, plan)
-		if err != nil {
-			// Fail-open on quota lookup errors so a flaky DB doesn't block paying users.
-			slog.Info(fmt.Sprintf("[Quota] lookup failed for %s: %v — allowing", userID, err))
-		} else if status.Limit > 0 && status.Remaining <= 0 {
-			utils.RespondJSON(w, http.StatusTooManyRequests, map[string]interface{}{
-				"error":      "Daily try-on limit reached. Upgrade your plan for more.",
-				"plan":       status.Plan,
-				"limit":      status.Limit,
-				"used":       status.Used,
-				"remaining":  0,
-				"reset_date": status.Date,
-				"upsell":     true,
-			})
-			return
-		}
-
-		// Run the actual try-on handler. Wrap the writer so we can detect a
-		// successful response and only then bump the counter.
-		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(recorder, r)
-
-		// A response served from the recent-result cache did not call the
-		// upstream, so it must not consume one of the user's daily try-ons.
-		if recorder.Header().Get(CachedResultHeader) == "1" {
-			return
-		}
-
-		if recorder.status >= 200 && recorder.status < 300 {
-			bumpCtx, bumpCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer bumpCancel()
-			if bumpErr := utils.IncrementTryOnQuota(bumpCtx, userID); bumpErr != nil {
-				slog.Info(fmt.Sprintf("[Quota] increment failed for %s: %v", userID, bumpErr))
-			}
-		}
-	})
-}
-
-// statusRecorder lets QuotaMiddleware see the response status and
+// statusRecorder lets StarGateMiddleware see the response status — which is
+// what decides whether the star hold is committed or refunded — and
 // RequestLogMiddleware see the response size, without touching the body.
 // Write() implicitly calls WriteHeader(200), which we capture via the default
 // `status` field.

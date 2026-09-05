@@ -13,10 +13,15 @@ import (
 
 const chromeDriverPath = "/usr/bin/chromedriver"
 
+func init() {
+	InitPortManager(4444, 16)
+}
+
 // FetchDocumentSelenium fetches the URL using Selenium and returns the page content as a string
 func (b *BaseScraper) FetchDocumentSelenium(url string) (*goquery.Document, error) {
-	// Initialize PortManager if not already
-	InitPortManager(4444, 16)
+	if GlobalPortManager == nil {
+		InitPortManager(4444, 16)
+	}
 
 	port, err := GlobalPortManager.GetPort()
 	if err != nil {

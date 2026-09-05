@@ -30,6 +30,12 @@ type TryOn struct {
 	PersonImageURL  string `bson:"person_image_url,omitempty" json:"person_image_url,omitempty"`
 	ProductImageURL string `bson:"product_image_url,omitempty" json:"product_image_url,omitempty"`
 
+	// SpecialRequest is the customer's own free-text styling note, capped at
+	// utils.MaxSpecialRequestChars and sanitised before it reaches the model.
+	// Stored so a result can be explained after the fact: "why is she on a
+	// beach?" is only answerable if the note that asked for one was kept.
+	SpecialRequest string `bson:"special_request,omitempty" json:"special_request,omitempty"`
+
 	GeneratedImageURL string    `bson:"generated_image_url" json:"generated_image_url"`
 	Status            string    `bson:"status" json:"status"`
 	CreatedAt         time.Time `bson:"created_at" json:"created_at"`

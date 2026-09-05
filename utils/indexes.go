@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/raushankrgupta/web-product-scraper/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -31,11 +32,6 @@ func EnsureIndexes(ctx context.Context, dbName string) {
 		{"wardrobe", mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}}},
 		// Gallery listing, newest first.
 		{"tryons", mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}}},
-		// Quota lookup runs on every try-on request, before the handler.
-		{"tryon_quota", mongo.IndexModel{
-			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "date", Value: 1}},
-			Options: options.Index().SetUnique(true),
-		}},
 		// Login/signup/Google-login all look users up by email. Unique is the
 		// structural guarantee behind the deleted-account tombstone rename:
 		// two live rows must never share an address.
@@ -45,6 +41,111 @@ func EnsureIndexes(ctx context.Context, dbName string) {
 		}},
 		// Powers the "which domains can't we scrape" digest.
 		{"products", mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: -1}}}},
+		// The same digest one level down: which *sites* are failing and for
+		// which stable reason. Partial so it indexes only the failure rows —
+		// successful products carry no failure_host and there is nothing to
+		// learn from indexing them here.
+		{"products", mongo.IndexModel{
+			Keys: bson.D{{Key: "failure_host", Value: 1}, {Key: "failure_reason", Value: 1}, {Key: "created_at", Value: -1}},
+			Options: options.Index().SetPartialFilterExpression(
+				bson.M{"failure_host": bson.M{"$exists": true}}),
+		}},
+
+		// --- Try-on post-mortems ---
+		//
+		// Read by hand, never on a request path, and always as "what has been
+		// failing lately" or "what did this reason group look like".
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys: bson.D{{Key: "created_at", Value: -1}},
+		}},
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys: bson.D{{Key: "reason", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// Support's entry point: "this user says nothing works".
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// "What died before we spent anything, versus what died after?" —
+		// the stage split is the first cut of every investigation.
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys: bson.D{{Key: "stage", Value: 1}, {Key: "reason", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// TTL. Mongo drops each document at its own expires_at, so the
+		// retention window is a Go constant (utils.FailureRetention) rather
+		// than something encoded in the index and forgotten.
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys:    bson.D{{Key: "expires_at", Value: 1}},
+			Options: options.Index().SetExpireAfterSeconds(0),
+		}},
+
+		// --- Star economy ---
+		//
+		// The ledger is read newest-first per user for the in-app history.
+		{models.CollStarLedger, mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// A Play purchase token may appear in the ledger exactly once. This
+		// unique partial index is the structural guarantee that a purchase
+		// cannot be credited twice — not a code path someone has to remember
+		// to write. Partial because spend rows carry no token, and a plain
+		// unique index would collapse them all onto a single null key.
+		{models.CollStarLedger, mongo.IndexModel{
+			Keys: bson.D{{Key: "purchase_token", Value: 1}},
+			Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+				bson.M{"purchase_token": bson.M{"$exists": true, "$type": "string"}}),
+		}},
+		// One row per Play purchase token.
+		{models.CollStarPurchases, mongo.IndexModel{
+			Keys:    bson.D{{Key: "purchase_token", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		}},
+		// The reconciler scans by state.
+		{models.CollStarPurchases, mongo.IndexModel{
+			Keys: bson.D{{Key: "state", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// The hold sweeper scans for holds older than the expiry window.
+		{models.CollStarBalances, mongo.IndexModel{Keys: bson.D{{Key: "held.at", Value: 1}}}},
+		// Returning-user detection looks up exactly one hash per signup.
+		{models.CollSignupIdentities, mongo.IndexModel{
+			Keys:    bson.D{{Key: "email_hash", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		}},
+
+		// --- Earned stars ---
+		//
+		// One code per user. The code itself is the _id (already unique), so
+		// this is the index that stops a user ending up with two codes when
+		// they open the referral screen twice at once.
+		{models.CollReferralCodes, mongo.IndexModel{
+			Keys:    bson.D{{Key: "user_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		}},
+		// The referral screen counts how many people used a given code.
+		{models.CollReferralRedemptions, mongo.IndexModel{
+			Keys: bson.D{{Key: "referrer_user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// Which accounts a code has paid out for, for fraud review. The
+		// one-shot guard itself is the _id (the referee's email hash), so it
+		// needs no index of its own.
+		{models.CollReferralRedemptions, mongo.IndexModel{
+			Keys: bson.D{{Key: "code", Value: 1}},
+		}},
+		// Deletion reasons are read as an aggregate, newest first.
+		{models.CollDeletionFeedback, mongo.IndexModel{
+			Keys: bson.D{{Key: "reason", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+
+		// --- Custom backgrounds ---
+		//
+		// The theme picker lists one user's uploads newest first, and the
+		// try-on resolves a theme by id with an ownership clause. Partial on
+		// user_id so the index covers only custom backgrounds — the curated
+		// themes have no user_id and there is no reason to index them here.
+		{"themes", mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+			Options: options.Index().SetPartialFilterExpression(
+				bson.M{"user_id": bson.M{"$exists": true}}),
+		}},
 	}
 
 	for _, s := range specs {

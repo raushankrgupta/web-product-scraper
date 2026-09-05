@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/config"
@@ -26,7 +25,12 @@ func GetThemesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Find all active themes
 	themeType := r.URL.Query().Get("type")
-	filter := bson.M{}
+	// Curated themes only. This response is served through
+	// ImageCacheMiddleware with a *public* Cache-Control, so anything
+	// user-specific that reached it would be cached and handed to the next
+	// caller. `user_id: {$exists: false}` is what keeps uploaded backgrounds
+	// out — they are served from GET /themes/custom, behind auth and uncached.
+	filter := bson.M{"user_id": bson.M{"$exists": false}}
 	if themeType != "" {
 		filter["type"] = themeType
 	}
@@ -43,18 +47,10 @@ func GetThemesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for i := range themes {
-		if themes[i].ThemeImageURL != "" && !strings.HasPrefix(themes[i].ThemeImageURL, "http") {
-			if url, err := utils.GetPresignedURL(r.Context(), themes[i].ThemeImageURL); err == nil {
-				themes[i].ThemeImageURL = url
-			}
-		}
-		if themes[i].ThemeBlankImageURL != "" && !strings.HasPrefix(themes[i].ThemeBlankImageURL, "http") {
-			if url, err := utils.GetPresignedURL(r.Context(), themes[i].ThemeBlankImageURL); err == nil {
-				themes[i].ThemeBlankImageURL = url
-			}
-		}
-	}
+	// Signed for PresignCatalog, not the default hour: this response is
+	// cached by the client, and a signature shorter than that cache is what
+	// left the theme grid rendering blank tiles an hour after first load.
+	presignThemes(r.Context(), themes)
 
 	utils.RespondJSON(w, http.StatusOK, map[string]interface{}{
 		"themes": themes,

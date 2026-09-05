@@ -37,6 +37,19 @@ func main() {
 
 	utils.InitLogger(os.Getenv("LOG_LEVEL"), config.Environment, version)
 
+	// The star economy is loaded before anything can serve a request, and a
+	// bad config is fatal rather than a warning. Every other setting in this
+	// process degrades to a default when it is wrong; this one must not. A
+	// typo that prices a Pro generation at 1 star instead of 25 is a silent,
+	// uncapped bill, and a missing pack definition means a user pays and
+	// receives nothing.
+	if err := config.LoadStars(); err != nil {
+		alert.Fatalf("config", "star configuration is invalid", err)
+		flushAlerts()
+		slog.Error("invalid star configuration", "error", err)
+		os.Exit(1)
+	}
+
 	// Alerting second, so a failure in either of the two boot dependencies
 	// below reaches Telegram instead of only the container log.
 	alert.Init(alert.Config{
@@ -70,6 +83,17 @@ func main() {
 	idxCtx, cancelIdx := context.WithTimeout(rootCtx, 30*time.Second)
 	utils.EnsureIndexes(idxCtx, config.DBName)
 	cancelIdx()
+
+	// Return stars from generations that never reported back — a crashed
+	// process, a dropped connection, a handler that panicked between
+	// reserving and settling. Without this those stars are lost to the user
+	// with no image to show for them.
+	utils.StartHoldSweeper(rootCtx)
+
+	// Credit Indian UPI and netbanking purchases that settle after the app
+	// has moved on, retry consumption so Play does not auto-refund a
+	// purchase we already credited, and claw back refunds and chargebacks.
+	utils.StartPurchaseReconciler(rootCtx)
 
 	// Probe server B once now and every 5 minutes. A dead scrape dependency
 	// should be visible at boot, not on the first user request.
@@ -210,8 +234,28 @@ func registerRoutes(mux *http.ServeMux) {
 		[]string{http.MethodGet, http.MethodHead, http.MethodDelete, http.MethodPost},
 		api.DeleteAccountRoute()))
 
-	// Billing / quota.
+	// Billing: balance, catalogue, purchases and history.
 	mux.Handle("/billing/status", guard(get, api.AuthMiddleware(http.HandlerFunc(api.BillingStatusHandler))))
+	// The catalogue is what the app renders prices from, so a repricing in
+	// config/stars.json reaches users without a store release.
+	mux.Handle("/billing/catalog", guard(get, api.AuthMiddleware(http.HandlerFunc(api.CatalogHandler))))
+	mux.Handle("/billing/purchase", guard(post, api.AuthMiddleware(http.HandlerFunc(api.PurchaseHandler))))
+	mux.Handle("/billing/ledger", guard(get, api.AuthMiddleware(http.HandlerFunc(api.LedgerHandler))))
+
+	// Google Play Real-time Developer Notifications, delivered by a Pub/Sub
+	// push subscription. Google is the caller, so this sits outside
+	// AuthMiddleware and is guarded by the shared token in PLAY_RTDN_TOKEN
+	// instead — an open endpoint that mutates balances would let anyone who
+	// finds the URL forge a refund.
+	mux.Handle("/billing/play-rtdn", guard(post, http.HandlerFunc(api.PlayRTDNHandler)))
+
+	// Earned stars. Both rewards are bounded per identity server-side, so
+	// these are ordinary authenticated endpoints — the guard is the unique
+	// index behind them, not the route.
+	mux.Handle("/rewards", guard(get, api.AuthMiddleware(http.HandlerFunc(api.RewardsHandler))))
+	mux.Handle("/rewards/referral", guard(get, api.AuthMiddleware(http.HandlerFunc(api.ReferralHandler))))
+	mux.Handle("/rewards/referral/redeem", guard(post, api.AuthMiddleware(http.HandlerFunc(api.RedeemReferralHandler))))
+	mux.Handle("/rewards/review", guard(post, api.AuthMiddleware(http.HandlerFunc(api.ReviewRewardHandler))))
 
 	// Legal.
 	mux.Handle("/legal/privacy-policy", guard(get, http.HandlerFunc(api.GetPrivacyPolicy)))
@@ -221,7 +265,19 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/product/details", guard(post, api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler)), true)))
 	mux.Handle("/product/upload", guard(post, api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.UploadProductHandler)), true)))
 
-	mux.Handle("/themes", guard(get, api.ImageCacheMiddleware(http.HandlerFunc(api.GetThemesHandler), true)))
+	// Cached for a day, not the 30-day `immutable` the other image routes use.
+	// The body carries presigned S3 URLs, and an `immutable` response outlives
+	// its own links: clients kept replaying a month-old payload whose
+	// signatures had expired after an hour, so every theme tile rendered
+	// blank. One day sits well inside utils.PresignCatalog.
+	mux.Handle("/themes", guard(get, api.ImageCacheMiddleware(http.HandlerFunc(api.GetThemesHandler), false)))
+	// A user's own uploaded backgrounds. Deliberately NOT wrapped in
+	// ImageCacheMiddleware: that sets `Cache-Control: public`, and this
+	// response is private to one account. Auth is applied inside
+	// CustomThemeRoute, alongside the guest rejection.
+	mux.Handle("/themes/custom", guard(
+		[]string{http.MethodGet, http.MethodPost, http.MethodDelete},
+		api.CustomThemeRoute()))
 
 	// Person endpoints return user-specific JSON (not raw images), so we don't
 	// wrap them in ImageCacheMiddleware. That middleware set
@@ -234,15 +290,19 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/persons/", guard([]string{http.MethodGet, http.MethodPut, http.MethodDelete}, persons))
 
 	// Try-on endpoints:
-	//   MethodGuard → AuthMiddleware → TryOnGuardMiddleware → QuotaMiddleware
+	//   MethodGuard → AuthMiddleware → TryOnGuardMiddleware → StarGateMiddleware
 	//
-	// TryOnGuardMiddleware sits *outside* the quota check on purpose: a
+	// TryOnGuardMiddleware sits *outside* the billing check on purpose: a
 	// duplicate in-flight request or a user stuck in a failure loop should be
-	// rejected before anything reaches a paid upstream call. The production
-	// log showed 30 requests covering 11 unique pairs, all uncapped because
-	// QuotaMiddleware only counts successes.
+	// rejected before it can take a second star hold, and before anything
+	// reaches a paid upstream call. The production log showed 30 requests
+	// covering 11 unique pairs, all uncapped.
+	//
+	// StarGateMiddleware replaces the old QuotaMiddleware: it reserves the
+	// cost of the generation before the handler runs and settles it after —
+	// committed on success, refunded on every failure path.
 	tryOn := func(h http.HandlerFunc) http.Handler {
-		return guard(post, api.AuthMiddleware(api.TryOnGuardMiddleware(api.QuotaMiddleware(h))))
+		return guard(post, api.AuthMiddleware(api.TryOnGuardMiddleware(api.StarGateMiddleware(h))))
 	}
 	mux.Handle("/try-on", tryOn(api.VirtualTryOnHandler))
 	mux.Handle("/try-on/individual", tryOn(api.IndividualTryOnHandler))
@@ -250,7 +310,8 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/try-on/group", tryOn(api.GroupTryOnHandler))
 	// Guest try-on: one-shot endpoint for anonymous users (no persistence).
 	// Same sandwich because guest tokens come through the same path with
-	// plan=guest, capped at 1/day.
+	// plan=guest. Guests are pinned to the free quality tier and capped by
+	// free.guest_daily_free_count.
 	mux.Handle("/try-on/guest", tryOn(api.GuestTryOnHandler))
 
 	// Gallery, wardrobe, and feedback all return user-specific JSON (not raw
@@ -266,10 +327,16 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/wardrobe", guard([]string{http.MethodGet, http.MethodPost}, wardrobe))
 	mux.Handle("/wardrobe/", guard([]string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete}, wardrobe))
 
-	// Dev-only alert smoke test. Gated on ENVIRONMENT != prod *and* the
-	// internal shared secret, so it can never be reached in production.
+	// Dev-only routes. Both are gated on ENVIRONMENT != prod *and* the
+	// internal shared secret, so they can never be reached in production.
+	//
+	// /internal/stars is the one that matters for testing: in-app purchases
+	// cannot complete on a sideloaded build, so without a way to grant a
+	// balance directly, every paid path is untestable until an AAB reaches a
+	// Play track.
 	if !config.IsProd() {
 		mux.Handle("/internal/alert-test", guard(post, http.HandlerFunc(api.AlertTestHandler)))
+		mux.Handle("/internal/stars", guard(post, http.HandlerFunc(api.DevStarsHandler)))
 	}
 }
 
