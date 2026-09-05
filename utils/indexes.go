@@ -41,6 +41,42 @@ func EnsureIndexes(ctx context.Context, dbName string) {
 		}},
 		// Powers the "which domains can't we scrape" digest.
 		{"products", mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: -1}}}},
+		// The same digest one level down: which *sites* are failing and for
+		// which stable reason. Partial so it indexes only the failure rows —
+		// successful products carry no failure_host and there is nothing to
+		// learn from indexing them here.
+		{"products", mongo.IndexModel{
+			Keys: bson.D{{Key: "failure_host", Value: 1}, {Key: "failure_reason", Value: 1}, {Key: "created_at", Value: -1}},
+			Options: options.Index().SetPartialFilterExpression(
+				bson.M{"failure_host": bson.M{"$exists": true}}),
+		}},
+
+		// --- Try-on post-mortems ---
+		//
+		// Read by hand, never on a request path, and always as "what has been
+		// failing lately" or "what did this reason group look like".
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys: bson.D{{Key: "created_at", Value: -1}},
+		}},
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys: bson.D{{Key: "reason", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// Support's entry point: "this user says nothing works".
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// "What died before we spent anything, versus what died after?" —
+		// the stage split is the first cut of every investigation.
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys: bson.D{{Key: "stage", Value: 1}, {Key: "reason", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// TTL. Mongo drops each document at its own expires_at, so the
+		// retention window is a Go constant (utils.FailureRetention) rather
+		// than something encoded in the index and forgotten.
+		{models.CollTryOnFailures, mongo.IndexModel{
+			Keys:    bson.D{{Key: "expires_at", Value: 1}},
+			Options: options.Index().SetExpireAfterSeconds(0),
+		}},
 
 		// --- Star economy ---
 		//

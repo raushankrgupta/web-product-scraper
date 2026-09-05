@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raushankrgupta/web-product-scraper/config"
+	"github.com/raushankrgupta/web-product-scraper/models"
+	"github.com/raushankrgupta/web-product-scraper/scrapers"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 	"github.com/raushankrgupta/web-product-scraper/utils/alert"
 )
@@ -25,6 +28,7 @@ import (
 //	product_url       — optional, will be scraped if present
 //	product_image     — optional, used instead of/in addition to product_url
 //	person_details    — optional, free-text body description ("F, 170cm, ...")
+//	special_request   — optional, free-text styling note (capped, sanitised)
 //
 // Either product_url or product_image must be provided.
 func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +80,9 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		normalized, err := utils.NormalizeProductURL(productURL)
 		if err != nil {
 			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Rejected malformed product_url %q: %v", productURL, err))
+			guestUserID, _ := GetUserIDFromContext(r.Context())
+			recordScrapeFailure(guestUserID, strings.TrimSpace(productURL), "", hostOf(productURL), "", "invalid_url", "guest",
+				fmt.Sprintf("invalid_url: %v", err))
 			utils.RespondError(w, nil, "That doesn't look like a valid product link.", http.StatusBadRequest)
 			return
 		}
@@ -136,13 +143,22 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !scrapedViaB {
+			guestUserID, _ := GetUserIDFromContext(r.Context())
 			switch scraper, resolvedURL, err := selectScraper(productURL); {
 			case err != nil:
 				utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scraper_not_found: %v", err))
+				// Recorded with flow="guest". A domain that fails here costs
+				// a first impression rather than a repeat visit, so the two
+				// are worth counting separately when deciding which retailer
+				// to write an adapter for next.
+				recordScrapeFailure(guestUserID, productURL, "", hostOf(productURL), "", "unsupported_site", "guest",
+					fmt.Sprintf("scraper_not_found: %v", err))
 				alert.Warnf("scraper", "no scraper found for domain", err, "domain", hostOf(productURL), "flow", "guest")
 			default:
 				if product, err := scraper.ScrapeProduct(resolvedURL); err != nil {
 					utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("scrape_failed: %v", err))
+					recordScrapeFailure(guestUserID, productURL, resolvedURL, hostOf(resolvedURL), scrapers.ScraperName(scraper), "scrape_failed", "guest",
+						fmt.Sprintf("scrape_failed: %v", err))
 					alert.Errorf("scraper", "scrape failed after routing", err, "domain", hostOf(resolvedURL), "flow", "guest")
 				} else {
 					productImageURLs = append(productImageURLs, product.Images...)
@@ -178,15 +194,42 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	//    image-gen safety classifier).
 	personDetails := strings.TrimSpace(r.FormValue("person_details"))
 
+	// Guests get the styling note too. It is the cheapest way for a
+	// first-time user to make the result feel like theirs, and withholding it
+	// from the funnel entry point would mean the first try-on is the least
+	// impressive one they ever see.
 	// Guests are pinned to the free quality tier by StarGateMiddleware; read
 	// it back rather than assuming, so a config change moves this too.
 	quality := GetQualityFromContext(r.Context())
 
+	specialRequest, ok := readSpecialRequest(w, r, &logMessageBuilder,
+		models.TryOnFailure{Route: "/try-on/guest", Type: "guest", Quality: quality},
+		r.FormValue("special_request"))
+	if !ok {
+		return
+	}
+
 	geminiCtx, cancel := context.WithTimeout(context.Background(), geminiTimeout(quality))
 	defer cancel()
 
+	failure := models.TryOnFailure{
+		Route:   "/try-on/guest",
+		Type:    "guest",
+		Quality: quality,
+		Model:   config.Stars.GeminiModelFor(quality),
+		Inputs: models.TryOnFailureInputs{
+			PersonDetails:  []string{personDetails},
+			PersonKeys:     []string{personKey},
+			GarmentKeys:    utils.KeysFromPresigned(productImageURLs),
+			ProductURL:     productURL,
+			SpecialRequest: specialRequest,
+		},
+	}
+
 	genStart := time.Now()
-	generated, err := utils.GenerateIndividualTryOnImage(geminiCtx, "", "", utils.PersonTryOnData{
+	generated, err := utils.GenerateIndividualTryOnImage(geminiCtx, utils.TryOnScene{
+		SpecialRequest: specialRequest,
+	}, utils.PersonTryOnData{
 		Details:        personDetails,
 		PersonImageURL: personImageURL,
 		TopURL:         productImageURLs,
@@ -195,7 +238,11 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		// Shared classifier so guest and signed-in try-on report the same
 		// status codes for the same upstream failure. The safety-block copy
 		// is tuned for a first-time user with no wardrobe to fall back on.
-		respondGenError(w, r, &logMessageBuilder, "/try-on/guest", "guest", err, genStart, map[int]string{
+		//
+		// The guest funnel is also where failure capture matters most: these
+		// users leave and never come back, so the DB row is the only record
+		// that the first thing they ever tried did not work.
+		respondGenError(w, r, &logMessageBuilder, failure, err, genStart, map[int]string{
 			http.StatusUnprocessableEntity: "We couldn't generate a try-on for this item. Try a clearer photo of yourself, or pick a different product.",
 		})
 		return
@@ -214,6 +261,7 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancelUpload()
 
 	if _, err := utils.UploadFileToS3(uploadCtx, bytes.NewReader(generated), resultKey, "image/jpeg"); err != nil {
+		recordStoreFailure(r, failure, err, genStart, len(generated))
 		utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
 			"We generated your look but couldn't save it. Please try again.", err, http.StatusInternalServerError)
 		return

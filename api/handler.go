@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,6 +26,51 @@ func hostOf(raw string) string {
 		return "unknown"
 	}
 	return strings.ToLower(u.Host)
+}
+
+// recordScrapeFailure persists a product link we could not read.
+//
+// The row lands in `products` with status "failed" and no images, which is
+// the shape every read path already excludes — the gallery reads `tryons`,
+// and the try-on product lookup filters status != "failed" — so a diagnostic
+// row can never surface in a user's feed. What the user gets instead is the
+// screenshot-upload path, offered by the `reason` code in the response.
+//
+// Written on a background context, not the request's: this runs on paths that
+// are about to return an error to a client who may well have already hung up,
+// and the record is worth more than the connection.
+func recordScrapeFailure(userID, productURL, resolvedURL, host, adapter, reason, flow, detail string) {
+	// Best-effort: never take the process down to record a diagnostic.
+	// See utils.MongoReady.
+	if !utils.MongoReady() {
+		slog.Warn("skipping scrape failure record: mongo not ready", "host", host, "reason", reason)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := utils.GetCollection(config.DBName, "products").InsertOne(ctx, models.Product{
+		ID:             primitive.NewObjectID(),
+		UserID:         userID,
+		URL:            productURL,
+		ResolvedURL:    resolvedURL,
+		Source:         "link",
+		Status:         "failed",
+		ScrapeError:    detail,
+		FailureReason:  reason,
+		FailureHost:    host,
+		FailureAdapter: adapter,
+		Flow:           flow,
+		CreatedAt:      time.Now(),
+	})
+	if err != nil {
+		slog.Warn("failed to record scrape failure",
+			"host", host, "reason", reason, "error", err.Error())
+		return
+	}
+	slog.Info("scrape failure recorded",
+		"host", host, "reason", reason, "adapter", adapter, "flow", flow)
 }
 
 // ScrapeHandler handles the scraping request
@@ -56,10 +103,18 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	// a real "net/url: invalid control character in URL" failure in
 	// production. This also strips utm_* so the same product shared from two
 	// places doesn't scrape twice.
+	userID, _ := GetUserIDFromContext(r.Context())
+
 	rawURL := productURL
 	productURL, err := utils.NormalizeProductURL(productURL)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Rejected malformed URL %q: %v", rawURL, err))
+		// Recorded like any other failure. A link the app itself considered
+		// safe enough to send but that we then rejected is usually a share
+		// sheet producing a shape we do not handle — invisible unless the
+		// rejected text is kept.
+		recordScrapeFailure(userID, strings.TrimSpace(rawURL), "", hostOf(rawURL), "", "invalid_url", "app",
+			fmt.Sprintf("invalid_url: %v", err))
 		utils.RespondErrorReason(w, nil,
 			"That doesn't look like a valid product link. Please paste the full URL.",
 			"invalid_url", http.StatusBadRequest)
@@ -70,8 +125,6 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Scraping URL query: %s", productURL))
-
-	userID, _ := GetUserIDFromContext(r.Context())
 
 	// Myntra blocks this server's datacenter IP. When server B (which runs on
 	// a dynamic IP Myntra doesn't block) is configured, delegate Myntra scrapes
@@ -87,32 +140,13 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		utils.AddToLogMessage(&logMessageBuilder, "Server B unavailable — falling back to local scraper")
 	}
 
-	collection := utils.GetCollection(config.DBName, "products")
-
-	saveFailedScrape := func(resolvedURL, scrapeErr string) {
-		failedProduct := models.Product{
-			ID:          primitive.NewObjectID(),
-			UserID:      userID,
-			URL:         productURL,
-			ResolvedURL: resolvedURL,
-			Status:      "failed",
-			ScrapeError: scrapeErr,
-			Source:      "link",
-			CreatedAt:   time.Now(),
-		}
-		if _, dbErr := collection.InsertOne(r.Context(), failedProduct); dbErr != nil {
-			utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to save failed scrape record: %v", dbErr))
-		} else {
-			utils.AddToLogMessage(&logMessageBuilder, "Failed scrape record saved to MongoDB for debugging")
-		}
-	}
-
 	// selectScraper resolves short links and routes Myntra URLs to the
 	// isolated myntra_scraper package; everything else still goes through
 	// the standard scrapers.GetScraper factory.
 	scraper, resolvedURL, err := selectScraper(productURL)
 	if err != nil {
-		saveFailedScrape("", fmt.Sprintf("scraper_not_found: %v", err))
+		recordScrapeFailure(userID, productURL, "", hostOf(productURL), "", "unsupported_site", "app",
+			fmt.Sprintf("scraper_not_found: %v", err))
 		// A domain we can't route is product-roadmap input, not an outage —
 		// WARN with rollup so a burst of the same domain is one message.
 		alert.Warnf("scraper", "no scraper found for domain", err, "domain", hostOf(productURL))
@@ -126,12 +160,14 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	collection := utils.GetCollection(config.DBName, "products")
 	adapter := scrapers.ScraperName(scraper)
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Resolved URL: %s (adapter=%s)", resolvedURL, adapter))
 
 	product, err := scraper.ScrapeProduct(resolvedURL)
 	if err != nil {
-		saveFailedScrape(resolvedURL, fmt.Sprintf("scrape_failed: %v", err))
+		recordScrapeFailure(userID, productURL, resolvedURL, hostOf(resolvedURL), adapter, "scrape_failed", "app",
+			fmt.Sprintf("scrape_failed: %v", err))
 		// `scrape_failed` covers a site we *do* support that refused us —
 		// Myntra blocking the datacenter IP is the common case. Worth one
 		// retry, and the app offers screenshots as the reliable fallback.

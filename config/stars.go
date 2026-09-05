@@ -111,7 +111,21 @@ type StarModel struct {
 	EstCostUSD       float64 `json:"est_cost_usd"`
 	TimeoutSecs      int     `json:"timeout_secs"`
 	MultiTimeoutSecs int     `json:"multi_timeout_secs"`
+
+	// The OpenAI fallback for this tier. Empty means the tier is Gemini-only,
+	// which is a valid configuration — a tier with no fallback simply fails
+	// the way it always did.
+	//
+	// OpenAIEstCostUSD includes an input-token allowance; EstCostUSD (Gemini)
+	// does not, because Gemini's input rate rounds to nothing at our sizes.
+	// See the _openai_note in stars.json.
+	OpenAIModel      string  `json:"openai_model"`
+	OpenAIQuality    string  `json:"openai_quality"`
+	OpenAIEstCostUSD float64 `json:"openai_est_cost_usd"`
 }
+
+// HasOpenAI reports whether this tier has a configured fallback vendor.
+func (m StarModel) HasOpenAI() bool { return m.OpenAIModel != "" }
 
 // StarPack is one purchasable bundle. ProductID must match the in-app product
 // id in Play Console byte for byte.
@@ -249,6 +263,21 @@ func (s *StarConfig) validate() error {
 		}
 		if m.TimeoutSecs <= 0 || m.MultiTimeoutSecs <= 0 {
 			return fmt.Errorf("model %q has a non-positive timeout", name)
+		}
+		if m.OpenAIModel != "" {
+			// A fallback priced at zero would sail through the margin check
+			// and hide a real cost, which is the one thing the check exists
+			// to prevent.
+			if m.OpenAIEstCostUSD <= 0 {
+				return fmt.Errorf("model %q has openai_model %q but no openai_est_cost_usd", name, m.OpenAIModel)
+			}
+			switch m.OpenAIQuality {
+			case "low", "medium", "high":
+			case "":
+				return fmt.Errorf("model %q has openai_model %q but no openai_quality", name, m.OpenAIModel)
+			default:
+				return fmt.Errorf("model %q has openai_quality %q; must be low, medium or high", name, m.OpenAIQuality)
+			}
 		}
 	}
 
@@ -412,6 +441,16 @@ func (s *StarConfig) GeminiModelFor(quality string) string {
 	return s.Models[s.DefaultQuality].GeminiModel
 }
 
+// OpenAIModelFor returns the fallback model id and its quality setting for a
+// tier, or ok=false when the tier has no fallback configured.
+func (s *StarConfig) OpenAIModelFor(quality string) (model, openaiQuality string, ok bool) {
+	m, found := s.Models[quality]
+	if !found || m.OpenAIModel == "" {
+		return "", "", false
+	}
+	return m.OpenAIModel, m.OpenAIQuality, true
+}
+
 // NormaliseQuality maps user input onto a known quality, defaulting rather
 // than erroring. Same reasoning as GeminiModelFor: default down, never up.
 func (s *StarConfig) NormaliseQuality(quality string) string {
@@ -480,8 +519,15 @@ func (s *StarConfig) MinStarValueINR() float64 {
 // (cheapest) star rate. Used by tools/stars_check and the /billing/economics
 // debug endpoint; never on a request path.
 type TierMargin struct {
-	Type      string
-	Quality   string
+	Type    string
+	Quality string
+	// Provider is which vendor this row costs out. A tier with a fallback
+	// produces one row per vendor, because the customer pays the same number
+	// of stars whichever one serves the request — so both have to clear the
+	// floor independently. Checking only the primary is how a fallback turns
+	// a profitable tier into a loss-making one without anyone noticing.
+	Provider  string
+	Model     string
 	Stars     int
 	GrossINR  float64
 	NetINR    float64 // after Play's service fee
@@ -512,40 +558,54 @@ func (s *StarConfig) Margins() []TierMargin {
 			if !ok {
 				continue
 			}
-			cost := m.EstCostUSD * s.Economics.USDINR
+
 			gross := float64(stars) * starValue
 			net := gross * keep
 
-			// Stars needed so that net revenue >= multiple x cost.
-			starsFor := func(mult float64) int {
-				if starValue <= 0 || keep <= 0 || mult <= 0 {
-					return 0
+			row := func(provider, model string, costUSD float64) TierMargin {
+				cost := costUSD * s.Economics.USDINR
+
+				// Stars needed so that net revenue >= multiple x cost.
+				starsFor := func(mult float64) int {
+					if starValue <= 0 || keep <= 0 || mult <= 0 {
+						return 0
+					}
+					return int(math.Ceil(cost * mult / (starValue * keep)))
 				}
-				return int(math.Ceil(cost * mult / (starValue * keep)))
-			}
-			minStars := starsFor(s.Economics.MinMarginMultiple)
-			targetStars := starsFor(s.Economics.TargetMarginMultiple)
+				minStars := starsFor(s.Economics.MinMarginMultiple)
+				targetStars := starsFor(s.Economics.TargetMarginMultiple)
 
-			multiple := 0.0
-			if cost > 0 {
-				multiple = net / cost
+				multiple := 0.0
+				if cost > 0 {
+					multiple = net / cost
+				}
+
+				return TierMargin{
+					Type: tryOnType, Quality: quality,
+					Provider: provider, Model: model, Stars: stars,
+					GrossINR: gross, NetINR: net, CostINR: cost,
+					MarginINR: net - cost, Multiple: multiple,
+					MinStars: minStars, TargetStars: targetStars,
+					BelowMin:    stars < minStars,
+					BelowTarget: stars < targetStars,
+				}
 			}
 
-			out = append(out, TierMargin{
-				Type: tryOnType, Quality: quality, Stars: stars,
-				GrossINR: gross, NetINR: net, CostINR: cost,
-				MarginINR: net - cost, Multiple: multiple,
-				MinStars: minStars, TargetStars: targetStars,
-				BelowMin:    stars < minStars,
-				BelowTarget: stars < targetStars,
-			})
+			out = append(out, row("gemini", m.GeminiModel, m.EstCostUSD))
+			if m.HasOpenAI() {
+				out = append(out, row("openai",
+					m.OpenAIModel+" ("+m.OpenAIQuality+")", m.OpenAIEstCostUSD))
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type != out[j].Type {
 			return out[i].Type < out[j].Type
 		}
-		return out[i].Quality < out[j].Quality
+		if out[i].Quality != out[j].Quality {
+			return out[i].Quality < out[j].Quality
+		}
+		return out[i].Provider < out[j].Provider
 	})
 	return out
 }

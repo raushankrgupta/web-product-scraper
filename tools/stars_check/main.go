@@ -35,11 +35,14 @@ func main() {
 	}
 	w.Flush()
 
+	fmt.Printf("\nevery provider that can serve a tier is costed separately: the customer\n" +
+		"pays the tier price whichever one answers, so a fallback that fails the\n" +
+		"floor is a loss-making generation waiting for an outage.\n")
 	fmt.Printf("\nmargins are computed at the CHEAPEST star rate (₹%.2f), i.e. what a\n"+
 		"customer on the biggest pack pays — the worst case for us.\n\n", s.MinStarValueINR())
 
 	w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TYPE\tQUALITY\tSTARS\tNET\tCOST\tMARGIN\tMULT\tVERDICT\t")
+	fmt.Fprintln(w, "TYPE\tQUALITY\tPROVIDER\tMODEL\tSTARS\tNET\tCOST\tMARGIN\tMULT\tVERDICT\t")
 	failed, thin := 0, 0
 	for _, m := range s.Margins() {
 		verdict := "ok"
@@ -51,8 +54,9 @@ func main() {
 			verdict = fmt.Sprintf("thin — %d stars for target", m.TargetStars)
 			thin++
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t₹%.2f\t₹%.2f\t₹%.2f\t%.2fx\t%s\n",
-			m.Type, m.Quality, m.Stars, m.NetINR, m.CostINR, m.MarginINR, m.Multiple, verdict)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t₹%.2f\t₹%.2f\t₹%.2f\t%.2fx\t%s\n",
+			m.Type, m.Quality, m.Provider, m.Model, m.Stars,
+			m.NetINR, m.CostINR, m.MarginINR, m.Multiple, verdict)
 	}
 	w.Flush()
 

@@ -47,13 +47,38 @@
   },
   "models": {
     "_note": "Keys are the 'quality' values the API accepts. gemini_model is the literal model id sent to Google — update here, never in Go source.",
+    "_openai_note": [
+      "openai_model / openai_quality / openai_est_cost_usd describe the",
+      "FALLBACK vendor for a tier. They are only reached when OPENAI_ENABLED=true",
+      "(and are tried first when IMAGE_PROVIDER_PREFERENCE=openai).",
+      "",
+      "The user is charged the TIER price regardless of which vendor served the",
+      "request, so every vendor on a tier must independently clear the margin",
+      "floor. tools/stars_check checks both, and CI fails if either is below it.",
+      "That is the rule that stops a fallback quietly turning a profitable tier",
+      "into a loss-making one.",
+      "",
+      "openai_est_cost_usd INCLUDES an allowance for input tokens, unlike the",
+      "Gemini figure. A try-on is an edit: we send a person photo plus 1-3",
+      "garment references on every call, gpt-image-2 processes all of them at",
+      "high fidelity with no way to turn that down, and at $8/M input tokens",
+      "that is larger than the output cost on the cheap tier. Gemini charges",
+      "for inputs too, at $0.30/M, which rounds to nothing.",
+      "",
+      "Do NOT put gpt-image-2 at high quality here: it costs ~$0.211/image and",
+      "loses money against the 25-star Pro price. It is a new tier, not a",
+      "substitution. See docs/OPENAI_IMAGE_FALLBACK.md."
+    ],
     "flash": {
       "label": "Standard",
       "tagline": "Fast · about 20 seconds",
       "gemini_model": "gemini-2.5-flash-image",
       "est_cost_usd": 0.039,
       "timeout_secs": 45,
-      "multi_timeout_secs": 90
+      "multi_timeout_secs": 90,
+      "openai_model": "gpt-image-1-mini",
+      "openai_quality": "medium",
+      "openai_est_cost_usd": 0.024
     },
     "pro": {
       "label": "Pro",
@@ -61,7 +86,10 @@
       "gemini_model": "gemini-3-pro-image-preview",
       "est_cost_usd": 0.134,
       "timeout_secs": 90,
-      "multi_timeout_secs": 150
+      "multi_timeout_secs": 150,
+      "openai_model": "gpt-image-2",
+      "openai_quality": "medium",
+      "openai_est_cost_usd": 0.083
     }
   },
   "default_quality": "flash",

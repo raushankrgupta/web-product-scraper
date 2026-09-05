@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -158,10 +159,13 @@ func settle(r *http.Request, userID string, res utils.Reservation, rec *statusRe
 
 	if err := utils.ReleaseReservation(ctx, userID, res); err != nil {
 		// This is the failure that actually costs a user money, so it is
-		// logged at error level with everything needed to refund by hand.
+		// logged at error level with everything needed to refund by hand —
+		// and persisted, because a log line naming a hold id is worthless
+		// once the log has rotated and somebody finally asks who is owed what.
 		utils.L(r.Context()).Error("failed to refund star hold — manual refund may be needed",
 			"user_id", userID, "hold_id", res.HoldID, "source", res.Source,
 			"amount", res.Amount, "error", err.Error())
+		recordRefundFailure(r, userID, res, err)
 	}
 }
 
@@ -173,6 +177,7 @@ func respondReserveError(w http.ResponseWriter, r *http.Request, err error,
 	userID, tryOnType, quality string, isGuest bool) {
 
 	if errors.Is(err, utils.ErrUnknownTier) {
+		recordGateRejection(r, "unknown_tier", http.StatusBadRequest, err.Error())
 		utils.RespondJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"error": "That combination is not available.",
 		})
@@ -180,6 +185,7 @@ func respondReserveError(w http.ResponseWriter, r *http.Request, err error,
 	}
 
 	if !errors.Is(err, utils.ErrInsufficientFunds) {
+		recordGateRejection(r, "reserve_failed", http.StatusInternalServerError, err.Error())
 		utils.RespondInternalError(w, r, nil, "stars",
 			"We couldn't start that try-on. Please try again.", err, http.StatusInternalServerError)
 		return
@@ -196,6 +202,8 @@ func respondReserveError(w http.ResponseWriter, r *http.Request, err error,
 	if isGuest {
 		// A guest has no balance to top up — the next step is signing up,
 		// which is also where the welcome credits are.
+		recordGateRejection(r, "guest_limit", http.StatusPaymentRequired,
+			fmt.Sprintf("guest out of free try-ons (cost=%d)", cost))
 		utils.RespondJSON(w, http.StatusPaymentRequired, map[string]interface{}{
 			"error":                  "You've used today's free try-on. Sign up free to get more.",
 			"reason":                 "guest_limit",
@@ -205,6 +213,8 @@ func respondReserveError(w http.ResponseWriter, r *http.Request, err error,
 		return
 	}
 
+	recordGateRejection(r, "insufficient_stars", http.StatusPaymentRequired,
+		fmt.Sprintf("cost=%d balance=%d", cost, balance))
 	utils.RespondJSON(w, http.StatusPaymentRequired, map[string]interface{}{
 		"error":    "You don't have enough stars for this try-on.",
 		"reason":   "insufficient_stars",

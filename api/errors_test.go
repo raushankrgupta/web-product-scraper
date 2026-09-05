@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -97,5 +98,24 @@ func TestClassifyGenErrNil(t *testing.T) {
 	status, msg := classifyGenErr(nil)
 	if status != http.StatusOK || msg != "" {
 		t.Errorf("classifyGenErr(nil) = (%d, %q), want (200, \"\")", status, msg)
+	}
+}
+
+// A refused image (finish_reason IMAGE_*) is not the same failure as a generic
+// block: the model will refuse the same photo every time, so the copy has to
+// point at the photo rather than invite another identical attempt.
+func TestClassifyGenErrImageRefusal(t *testing.T) {
+	for _, reason := range []string{"IMAGE_SAFETY(11)", "IMAGE_OTHER(15)", "IMAGE_PROHIBITED_CONTENT(14)"} {
+		err := errors.New("no content generated (blocked, finish_reason=" + reason + ")")
+		status, msg := classifyGenErr(err)
+		if status != http.StatusUnprocessableEntity {
+			t.Errorf("%s: status = %d, want 422", reason, status)
+		}
+		if !strings.Contains(msg, "different photo of the person") {
+			t.Errorf("%s: message %q should point at the person photo", reason, msg)
+		}
+		if strings.Contains(msg, reason) {
+			t.Errorf("%s: upstream detail leaked into %q", reason, msg)
+		}
 	}
 }

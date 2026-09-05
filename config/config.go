@@ -10,18 +10,39 @@ import (
 )
 
 var (
-	MongoURI           string
-	Port               string
+	MongoURI              string
+	Port                  string
 	GoogleClientID        string
 	GoogleAndroidClientID string
 	GoogleIOSClientID     string
 	GoogleClientSecret    string
 	GoogleRedirectURL     string
-	GeminiAPIKey       string
-	AWSRegion          string
-	AWSBucketName      string
-	DBName             string
-	ContactEmail       string
+	GeminiAPIKey          string
+
+	// --- Image generation providers ---
+	//
+	// OpenAI is a *fallback* for Gemini, not a product choice the user makes.
+	// The app sells Standard and Pro; which vendor renders them is an
+	// operational detail, which is why it lives here and in stars.json rather
+	// than anywhere the client can see.
+	OpenAIAPIKey string
+	// OpenAIEnabled is the master switch. Off means the provider list is
+	// exactly ["gemini"] and no OpenAI code path can be reached, whatever the
+	// preference says.
+	OpenAIEnabled bool
+	// ImageProviderPreference is which vendor to try FIRST: "gemini" or
+	// "openai". The other one becomes the fallback. Both tiers are priced so
+	// that either vendor clears the margin floor (tools/stars_check enforces
+	// it), so flipping this cannot make a generation unprofitable.
+	ImageProviderPreference string
+	// OpenAITimeoutSecs bounds a single OpenAI generation. Separate from the
+	// Gemini budgets in stars.json because a fallback runs inside whatever is
+	// left of the request, not with a fresh clock.
+	OpenAITimeoutSecs int
+	AWSRegion         string
+	AWSBucketName     string
+	DBName            string
+	ContactEmail      string
 
 	// ServerBScrapeURL is the full URL of the scraper-service (server B)
 	// internal endpoint, e.g. https://scraper-b.example.com/internal/scrape.
@@ -158,6 +179,34 @@ func LoadConfig() {
 	}
 
 	GeminiAPIKey = os.Getenv("GEMINI_API_KEY")
+
+	OpenAIAPIKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	// Default off, and forced off without a key: an enabled provider we cannot
+	// authenticate to would turn every fallback into a second wasted round
+	// trip on the critical path.
+	OpenAIEnabled = envBool("OPENAI_ENABLED", false) && OpenAIAPIKey != ""
+	if !OpenAIEnabled && OpenAIAPIKey != "" && envBool("OPENAI_ENABLED", false) {
+		log.Println("[config] OPENAI_ENABLED=true but OPENAI_API_KEY is empty — OpenAI disabled")
+	}
+
+	ImageProviderPreference = strings.ToLower(strings.TrimSpace(os.Getenv("IMAGE_PROVIDER_PREFERENCE")))
+	switch ImageProviderPreference {
+	case "", "gemini":
+		ImageProviderPreference = "gemini"
+	case "openai":
+		if !OpenAIEnabled {
+			// Preferring a disabled provider is a misconfiguration that would
+			// otherwise be silent: every generation would quietly run on the
+			// "fallback" and someone would wonder why the bill did not move.
+			log.Println("[config] IMAGE_PROVIDER_PREFERENCE=openai but OpenAI is disabled — preferring gemini")
+			ImageProviderPreference = "gemini"
+		}
+	default:
+		log.Printf("[config] IMAGE_PROVIDER_PREFERENCE=%q is not a known provider, using gemini", ImageProviderPreference)
+		ImageProviderPreference = "gemini"
+	}
+
+	OpenAITimeoutSecs = envInt("OPENAI_TIMEOUT_SECS", 90)
 
 	AWSRegion = os.Getenv("AWS_REGION")
 	if AWSRegion == "" {

@@ -36,6 +36,17 @@ func classifyGenErr(err error) (int, string) {
 		strings.Contains(s, "timeout"):
 		return http.StatusGatewayTimeout, "Generation is taking longer than usual. Please try again."
 
+	// The image-side refusals (finish_reason IMAGE_*) are the model declining
+	// to draw a particular person or product, and they are sticky: the same
+	// photo is refused every time. Saying "try a different photo or garment"
+	// sends people round the same loop with the same inputs, so name the photo
+	// — in practice it is the person image the model will not reproduce.
+	case strings.Contains(s, "image_safety"),
+		strings.Contains(s, "image_prohibited_content"),
+		strings.Contains(s, "image_other"),
+		strings.Contains(s, "image_recitation"):
+		return http.StatusUnprocessableEntity, "The AI wouldn't generate a look from this photo. Please try a different photo of the person."
+
 	case strings.Contains(s, "blocked"),
 		strings.Contains(s, "no content generated"),
 		strings.Contains(s, "returned text instead of an image"),

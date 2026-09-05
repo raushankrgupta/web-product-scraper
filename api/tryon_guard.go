@@ -88,8 +88,19 @@ var (
 )
 
 // tryOnCacheKey identifies a logically identical generation.
-func tryOnCacheKey(userID, personID, productID, themeID string) string {
-	return fmt.Sprintf("%s|%s|%s|%s", userID, personID, productID, themeID)
+//
+// The customer's styling note is part of the identity of the request, not
+// decoration on it: "same person, same garment, but on a rooftop at night" is
+// a different image, and hashing the note in is what stops the cache handing
+// back the daylight one. Hashed rather than concatenated so a 1000-character
+// note doesn't become a 1000-character map key.
+func tryOnCacheKey(userID, personID, productID, themeID, specialRequest string) string {
+	note := ""
+	if specialRequest != "" {
+		sum := sha256.Sum256([]byte(specialRequest))
+		note = hex.EncodeToString(sum[:8])
+	}
+	return fmt.Sprintf("%s|%s|%s|%s|%s", userID, personID, productID, themeID, note)
 }
 
 func rememberTryOnResult(key, objectKey string) {
@@ -194,6 +205,8 @@ func TryOnGuardMiddleware(next http.Handler) http.Handler {
 		// found out for six days.
 		if failures.Throttled(userID) {
 			slog.Warn("try-on throttled after repeated failures", "user_id", userID, "path", r.URL.Path)
+			recordGateRejection(r, "failure_throttled", http.StatusTooManyRequests,
+				fmt.Sprintf("%d failures within %s", failureThreshold, failureWindow))
 			utils.RespondJSON(w, http.StatusTooManyRequests, map[string]interface{}{
 				"error":       "We're having trouble generating images right now — we've been alerted. Please try again in a few minutes.",
 				"retry_after": int(failureWindow.Seconds()),
@@ -225,6 +238,8 @@ func TryOnGuardMiddleware(next http.Handler) http.Handler {
 		key := userID + ":" + r.URL.Path + ":" + fingerprintBody(body)
 		if !inflight.TryAcquire(key) {
 			slog.Info("duplicate try-on rejected", "user_id", userID, "path", r.URL.Path)
+			recordGateRejection(r, "duplicate_in_flight", http.StatusConflict,
+				"an identical try-on was already running")
 			utils.RespondJSON(w, http.StatusConflict, map[string]string{
 				"error": "This try-on is already being generated. Please wait.",
 			})
