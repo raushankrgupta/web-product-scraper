@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/config"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/androidpublisher/v3"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -57,19 +58,30 @@ func playClient(ctx context.Context) (*androidpublisher.Service, error) {
 	playOnce.Do(func() {
 		var opts []option.ClientOption
 
+		params := google.CredentialsParams{Scopes: []string{androidpublisher.AndroidpublisherScope}}
 		switch {
 		case strings.TrimSpace(config.PlayServiceAccountJSON) != "":
 			// Inline JSON is the deployment-friendly form: the whole key
 			// lives in one env var, so nothing has to be mounted into the
 			// container.
-			opts = append(opts, option.WithCredentialsJSON([]byte(config.PlayServiceAccountJSON)))
-		case strings.TrimSpace(config.PlayServiceAccountFile) != "":
-			if _, err := os.Stat(config.PlayServiceAccountFile); err != nil {
-				playErr = fmt.Errorf("PLAY_SERVICE_ACCOUNT_FILE %q is unreadable: %w",
-					config.PlayServiceAccountFile, err)
+			creds, err := google.CredentialsFromJSONWithTypeAndParams(context.Background(), []byte(config.PlayServiceAccountJSON), google.ServiceAccount, params)
+			if err != nil {
+				playErr = fmt.Errorf("parse PLAY_SERVICE_ACCOUNT_JSON: %w", err)
 				return
 			}
-			opts = append(opts, option.WithCredentialsFile(config.PlayServiceAccountFile))
+			opts = append(opts, option.WithTokenSource(creds.TokenSource))
+		case strings.TrimSpace(config.PlayServiceAccountFile) != "":
+			data, err := os.ReadFile(config.PlayServiceAccountFile)
+			if err != nil {
+				playErr = fmt.Errorf("PLAY_SERVICE_ACCOUNT_FILE %q is unreadable: %w", config.PlayServiceAccountFile, err)
+				return
+			}
+			creds, err := google.CredentialsFromJSONWithTypeAndParams(context.Background(), data, google.ServiceAccount, params)
+			if err != nil {
+				playErr = fmt.Errorf("parse PLAY_SERVICE_ACCOUNT_FILE: %w", err)
+				return
+			}
+			opts = append(opts, option.WithTokenSource(creds.TokenSource))
 		default:
 			playErr = ErrPlayBillingDisabled
 			return

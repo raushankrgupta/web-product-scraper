@@ -42,7 +42,7 @@ func ConnectMongo(uri string) error {
 // anything best-effort — check MongoReady first there. See RecordTryOnFailure.
 func GetCollection(databaseName, collectionName string) *mongo.Collection {
 	if Client == nil {
-		log.Fatal("MongoDB client is not initialized")
+		panic("MongoDB client is not initialized")
 	}
 	return Client.Database(databaseName).Collection(collectionName)
 }

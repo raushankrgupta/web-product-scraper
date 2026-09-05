@@ -33,6 +33,11 @@ func starLedger() *mongo.Collection {
 	return GetCollection(config.DBName, models.CollStarLedger)
 }
 
+// settledHoldRing bounds the per-user record of holds that have already been
+// settled. It only has to outlive a retry of the same commit, so it is sized
+// the same as creditedTokenRing rather than tuned separately.
+const settledHoldRing = 50
+
 // ------------------------------------------------------------------ balance
 
 // GetOrCreateBalance returns the user's balance document, creating an empty
@@ -468,10 +473,17 @@ func CommitReservation(ctx context.Context, userID string, r Reservation) error 
 		inc["lifetime_spent_stars"] = r.Amount
 	}
 
+	// A hold id lands in settled_holds whichever way it settles. That is what
+	// lets the late-settlement path below tell "the sweeper beat us, the user
+	// owes for this image" apart from "this commit already ran" — without it,
+	// a retried CommitReservation charges for the same generation twice.
+	settle := bson.M{"$each": bson.A{r.HoldID}, "$slice": -settledHoldRing}
+
 	res, err := starBalances().UpdateOne(ctx,
-		bson.M{"_id": userID, "held.id": r.HoldID},
+		bson.M{"_id": userID, "held.id": r.HoldID, "settled_holds": bson.M{"$ne": r.HoldID}},
 		bson.M{
 			"$pull": bson.M{"held": bson.M{"id": r.HoldID}},
+			"$push": bson.M{"settled_holds": settle},
 			"$inc":  inc,
 			"$set":  bson.M{"updated_at": time.Now()},
 		})
@@ -479,11 +491,42 @@ func CommitReservation(ctx context.Context, userID string, r Reservation) error 
 		return fmt.Errorf("commit hold: %w", err)
 	}
 	if res.ModifiedCount == 0 {
-		// The sweeper already released it — the user was refunded for a
-		// generation that actually succeeded. Rare, but worth knowing about
-		// because it means hold_expiry_minutes is too tight.
-		alert.Warnf("stars", "commit found no matching hold; it was likely swept", nil,
+		// No hold to drop. Either the sweeper already released it — the user
+		// was refunded for a generation that actually succeeded, and owes for
+		// the image they received — or this hold has settled once already.
+		if r.Source != models.FundStars || r.Amount <= 0 {
+			return nil
+		}
+
+		// The stars were debited at reserve time and handed back by the
+		// sweeper, so settling late means debiting them again. `stars` is the
+		// balance; lifetime_* are statistics and do not move money.
+		late, lateErr := starBalances().UpdateOne(ctx,
+			bson.M{"_id": userID, "settled_holds": bson.M{"$ne": r.HoldID}},
+			bson.M{
+				"$inc": bson.M{
+					"stars":                -r.Amount,
+					"lifetime_generations": 1,
+					"lifetime_spent_stars": r.Amount,
+				},
+				"$push": bson.M{"settled_holds": settle},
+				"$set":  bson.M{"updated_at": time.Now()},
+			})
+		if lateErr != nil {
+			return fmt.Errorf("late settle hold: %w", lateErr)
+		}
+		if late.ModifiedCount == 0 {
+			return nil // already settled; nothing owed
+		}
+
+		alert.Warnf("stars", "commit found no matching hold; late settling after sweep", nil,
 			"user_id", userID, "hold_id", r.HoldID, "source", r.Source)
+		appendLedger(ctx, models.StarLedgerEntry{
+			UserID: userID, Delta: -r.Amount, Reason: models.ReasonSpend,
+			Source: r.Source, HoldID: r.HoldID, IdempotencyKey: r.Key,
+			TryOnType: r.Type, Quality: r.Quality,
+			Note: "late settlement after hold sweep",
+		})
 		return nil
 	}
 
@@ -500,6 +543,18 @@ func CommitReservation(ctx context.Context, userID string, r Reservation) error 
 // ReleaseReservation refunds a hold after a failed generation. A user must
 // never pay for an image they did not receive.
 func ReleaseReservation(ctx context.Context, userID string, r Reservation) error {
+	// A handler-driven release is terminal: the generation failed, so the hold
+	// must never be settled afterwards. Marking it here is what stops a stray
+	// CommitReservation for the same hold from taking the late-settlement path
+	// and charging for an image the user never received.
+	return releaseReservation(ctx, userID, r, true)
+}
+
+// releaseReservation refunds a hold. `terminal` records the hold as settled so
+// it can never be charged later; the expiry sweeper passes false, because a
+// swept hold is provisional — the generation may still be running, and
+// CommitReservation settling it late is the whole point of that path.
+func releaseReservation(ctx context.Context, userID string, r Reservation, terminal bool) error {
 	inc := bson.M{}
 	filter := bson.M{"_id": userID, "held.id": r.HoldID}
 
@@ -522,6 +577,11 @@ func ReleaseReservation(ctx context.Context, userID string, r Reservation) error
 	}
 	if len(inc) > 0 {
 		update["$inc"] = inc
+	}
+	if terminal {
+		update["$push"] = bson.M{"settled_holds": bson.M{
+			"$each": bson.A{r.HoldID}, "$slice": -settledHoldRing,
+		}}
 	}
 
 	res, err := starBalances().UpdateOne(ctx, filter, update)
@@ -572,7 +632,9 @@ func SweepExpiredHolds(ctx context.Context) (int, error) {
 			}
 			r := Reservation{HoldID: h.ID, Source: h.Source, Amount: h.Amount,
 				Quality: h.Quality, Type: h.TryOnType, Key: h.Key}
-			if err := ReleaseReservation(ctx, b.UserID, r); err != nil {
+			// Provisional: the generation behind this hold may still be
+			// running, and CommitReservation is allowed to settle it late.
+			if err := releaseReservation(ctx, b.UserID, r, false); err != nil {
 				slog.Warn("sweep failed to release hold", "user_id", b.UserID, "hold_id", h.ID, "error", err)
 				continue
 			}

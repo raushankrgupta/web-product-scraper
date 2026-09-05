@@ -223,7 +223,31 @@ func TryOnGuardMiddleware(next http.Handler) http.Handler {
 		// limit would corrupt the multipart parse downstream. Guest requests
 		// therefore skip in-flight dedup and keep only the failure throttle.
 		if !isJSONRequest(r) {
-			next.ServeHTTP(w, r)
+			key := userID + ":" + r.URL.Path
+			if !inflight.TryAcquire(key) {
+				slog.Info("concurrent try-on rejected", "user_id", userID, "path", r.URL.Path)
+				recordGateRejection(r, "duplicate_in_flight", http.StatusConflict,
+					"a try-on is already running for this session")
+				utils.RespondJSON(w, http.StatusConflict, map[string]string{
+					"error": "A try-on is already in progress for your session. Please wait for it to complete.",
+				})
+				return
+			}
+			defer inflight.Release(key)
+
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, r)
+
+			switch {
+			case rec.status >= 200 && rec.status < 300:
+				failures.Clear(userID)
+			case rec.status >= 500 || rec.status == http.StatusUnprocessableEntity:
+				if failures.RecordFailure(userID) {
+					alert.Errorf("tryon", "user hit the consecutive-failure threshold", nil,
+						"user_id", userID, "route", r.URL.Path,
+						"threshold", fmt.Sprintf("%d in %s", failureThreshold, failureWindow))
+				}
+			}
 			return
 		}
 

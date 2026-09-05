@@ -83,6 +83,12 @@ type StarBalance struct {
 	// unique index is the durable record; this is the hot-path guard.
 	CreditedTokens []string `bson:"credited_tokens,omitempty" json:"-"`
 
+	// SettledHolds is the same trick applied to generations: a bounded ring
+	// of hold ids that have already been charged for. CommitReservation
+	// filters on it so a retried commit — or a commit that races the expiry
+	// sweeper — settles the hold exactly once instead of debiting twice.
+	SettledHolds []string `bson:"settled_holds,omitempty" json:"-"`
+
 	// Lifetime counters, for support and analytics. Never used in a spend
 	// decision — the live balance above is the only thing that gates.
 	LifetimePurchasedStars int `bson:"lifetime_purchased_stars" json:"lifetime_purchased_stars"`

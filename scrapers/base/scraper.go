@@ -1,7 +1,6 @@
 package base
 
 import (
-	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/raushankrgupta/web-product-scraper/utils"
 )
 
 // BaseScraper handles common scraping logic
@@ -16,25 +16,28 @@ type BaseScraper struct {
 	Client *http.Client
 }
 
-// NewBaseScraper creates a new BaseScraper instance
+// NewBaseScraper creates a new BaseScraper instance with SSRF protections
 func NewBaseScraper() *BaseScraper {
 	return &BaseScraper{
-		Client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				ForceAttemptHTTP2:     false,
-				TLSNextProto:          make(map[string]func(string, *tls.Conn) http.RoundTripper),
-				MaxIdleConns:          100,
-				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-			},
-		},
+		Client: utils.NewSafeHTTPClient(30 * time.Second),
 	}
 }
 
 // FetchDocument fetches the URL using multiple strategies with a custom validator
 func (b *BaseScraper) FetchDocument(url string, validator func(*goquery.Document) bool) (*goquery.Document, error) {
+	if validator == nil {
+		validator = IsValidDocument
+	}
+
+	// Validate once, here, rather than per-strategy. The ChromeDP and
+	// Selenium fallbacks drive a real browser, which resolves DNS and opens
+	// sockets itself — utils.SafeDialerControl guards the Go transport and
+	// never sees those connections. Without this check, a target the HTTP
+	// strategy refuses simply falls through to strategy 2 and is fetched
+	// anyway.
+	if err := utils.ValidateSafeURL(url); err != nil {
+		return nil, fmt.Errorf("fetch blocked by SSRF policy: %w", err)
+	}
 	// Each strategy's failure is carried into the final error rather than
 	// left in the breadcrumb lines below. Those go through the bare logger,
 	// so they have no request_id and can only be tied back to the request
@@ -91,7 +94,10 @@ func (b *BaseScraper) FetchDocument(url string, validator func(*goquery.Document
 	return nil, fmt.Errorf("all strategies failed for %s (%s)", url, strings.Join(reasons, "; "))
 }
 
-func isValidDocument(doc *goquery.Document) bool {
+func IsValidDocument(doc *goquery.Document) bool {
+	if doc == nil {
+		return false
+	}
 	// Basic heuristics
 	title := strings.TrimSpace(doc.Find("title").Text())
 	body := strings.TrimSpace(doc.Find("body").Text())
@@ -109,6 +115,10 @@ func isValidDocument(doc *goquery.Document) bool {
 
 // FetchDocumentHTTP fetches the URL and returns a GoQuery document via standard HTTP
 func (b *BaseScraper) FetchDocumentHTTP(url string) (*goquery.Document, error) {
+	if err := utils.ValidateSafeURL(url); err != nil {
+		return nil, fmt.Errorf("fetch blocked by SSRF policy: %w", err)
+	}
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err

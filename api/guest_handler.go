@@ -43,18 +43,41 @@ func (l *guestRateLimiter) allow(ip string, limit int, window time.Duration) boo
 
 	valid = append(valid, now)
 	l.history[ip] = valid
+
+	// Memory leak prevention: periodic pruning of expired IP entries
+	if len(l.history) > 5000 {
+		for k, timestamps := range l.history {
+			if len(timestamps) == 0 || timestamps[len(timestamps)-1].Before(cutoff) {
+				delete(l.history, k)
+			}
+		}
+	}
+
 	return true
 }
 
 func clientIP(r *http.Request) string {
+	// Trust CF-Connecting-IP first if behind Cloudflare
+	if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
+		if parsed := net.ParseIP(cfIP); parsed != nil {
+			return cfIP
+		}
+	}
+	// X-Real-IP if provided by reverse proxy (e.g. Caddy/Nginx)
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		if parsed := net.ParseIP(xrip); parsed != nil {
+			return xrip
+		}
+	}
+	// X-Forwarded-For: validate IP format
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
 		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
+			candidate := strings.TrimSpace(parts[0])
+			if parsed := net.ParseIP(candidate); parsed != nil {
+				return candidate
+			}
 		}
-	}
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		return strings.TrimSpace(xrip)
 	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {

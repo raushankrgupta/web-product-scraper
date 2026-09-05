@@ -100,6 +100,9 @@ func getWardrobe(w http.ResponseWriter, r *http.Request) {
 	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
 		limit = l
 	}
+	if limit > 50 {
+		limit = 50
+	}
 
 	collection := utils.GetCollection(config.DBName, "wardrobe")
 

@@ -35,10 +35,13 @@ func UploadProductHandler(w http.ResponseWriter, r *http.Request) {
 	// userIdStr is used for logging/record keeping, but generally we might store it as string or ObjectID depending on model.
 	// Product model uses UserID as string.
 
-	// Parse multipart form (max 10MB)
+	// Enforce strict upload limit (15MB) to prevent disk exhaustion DoS
+	r.Body = http.MaxBytesReader(w, r.Body, 15<<20)
+
+	// Parse multipart form (max 10MB in RAM)
 	err = r.ParseMultipartForm(10 << 20)
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, "Error parsing form data", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Error parsing form data: upload exceeds maximum allowed limit", http.StatusBadRequest)
 		return
 	}
 
@@ -54,17 +57,22 @@ func UploadProductHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		defer file.Close()
 
-		filename := fmt.Sprintf("prod_%d_%s", time.Now().UnixNano(), fileHeader.Filename)
-		objectKey := fmt.Sprintf("product_uploads/%s", filename)
+		func() {
+			defer file.Close()
+			objectKey, mime, err := utils.ValidateImageFile(file, "product_uploads")
+			if err != nil {
+				slog.Warn("rejected invalid product image upload", "filename", fileHeader.Filename, "error", err)
+				return
+			}
 
-		_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"))
-		if err != nil {
-			slog.Info(fmt.Sprintf("Failed to upload %s: %v", filename, err))
-			continue
-		}
-		imagePaths = append(imagePaths, objectKey)
+			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, mime)
+			if err != nil {
+				slog.Info(fmt.Sprintf("Failed to upload %s: %v", objectKey, err))
+				return
+			}
+			imagePaths = append(imagePaths, objectKey)
+		}()
 	}
 
 	if len(imagePaths) == 0 {
