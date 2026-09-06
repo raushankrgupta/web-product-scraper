@@ -95,12 +95,24 @@ func (s *FlipkartScraper) ScrapeProduct(url string) (*models.Product, error) {
 		doc.Find("script").EachWithBreak(func(i int, s *goquery.Selection) bool {
 			text := s.Text()
 			if strings.Contains(text, "window.__INITIAL_STATE__") {
-				// Extract JSON
-				start := strings.Index(text, "window.__INITIAL_STATE__ = ") + len("window.__INITIAL_STATE__ = ")
-				sub := text[start:]
+				// Extract JSON safely
+				idx := strings.Index(text, "window.__INITIAL_STATE__ = ")
+				if idx == -1 {
+					idx = strings.Index(text, "window.__INITIAL_STATE__=")
+					if idx == -1 {
+						return true
+					}
+					idx += len("window.__INITIAL_STATE__=")
+				} else {
+					idx += len("window.__INITIAL_STATE__ = ")
+				}
+				if idx >= len(text) {
+					return true
+				}
+				sub := text[idx:]
 				// It usually ends with a semicolon
 				end := strings.Index(sub, ";")
-				if end != -1 {
+				if end != -1 && end <= len(sub) {
 					jsonStr := sub[:end]
 					var state map[string]interface{}
 					if err := json.Unmarshal([]byte(jsonStr), &state); err == nil {

@@ -41,12 +41,18 @@ COPY . .
 ARG APP_VERSION=dev
 RUN go build -ldflags "-X main.version=${APP_VERSION}" -o web-product-scraper .
 
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app /tmp/chrome-user-data /tmp/chrome-user-data-myntra
+
 # Expose the port
 EXPOSE 8080
 
 # Environment variable to help Chromedp find the binary
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
+
+USER appuser
 
 # Command to run the executable
 CMD ["./web-product-scraper"]

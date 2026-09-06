@@ -63,6 +63,14 @@ func SubmitPurchase(ctx context.Context, userID, productID, token string) (Purch
 		alert.Warnf("billing", "purchase token replayed by a different account", nil,
 			"token_owner", existing.UserID, "claimed_by", userID, "product", productID)
 		return PurchaseResult{State: models.PurchaseRejected}, ErrTokenBelongsToAnotherUser
+	case err == nil && existing.State == models.PurchaseCredited:
+		// Already credited to this user — return idempotent success with Duplicate: true
+		return PurchaseResult{
+			State:     models.PurchaseCredited,
+			Stars:     pack.Stars,
+			Credited:  false,
+			Duplicate: true,
+		}, nil
 	case err != nil && err != mongo.ErrNoDocuments:
 		return PurchaseResult{}, fmt.Errorf("look up purchase: %w", err)
 	}
@@ -218,20 +226,33 @@ func markConsumed(ctx context.Context, token string) {
 // buy stars, spend them, refund the payment, and keep the images — repeatedly.
 // A negative balance simply means the next purchase pays off the debt first.
 func RevokePurchase(ctx context.Context, token, reason string) error {
+	// Atomically find and mark the purchase refunded so concurrent refund
+	// notifications cannot process the same token twice.
 	var p models.StarPurchase
-	if err := starPurchases().FindOne(ctx, bson.M{"purchase_token": token}).Decode(&p); err != nil {
+	err := starPurchases().FindOneAndUpdate(
+		ctx,
+		bson.M{
+			"purchase_token": token,
+			"state":          bson.M{"$ne": models.PurchaseRefunded},
+		},
+		bson.M{
+			"$set": bson.M{
+				"state":      models.PurchaseRefunded,
+				"reason":     reason,
+				"updated_at": time.Now(),
+			},
+		},
+	).Decode(&p)
+
+	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return nil // never credited; nothing to claw back
+			return nil // already handled or never recorded
 		}
 		return fmt.Errorf("look up purchase for revoke: %w", err)
 	}
-	if p.State == models.PurchaseRefunded {
-		return nil // already handled
-	}
+
+	// Only claw back stars if the purchase had actually been credited
 	if p.State != models.PurchaseCredited {
-		// Recorded but never credited — just mark it and move on.
-		_, _ = starPurchases().UpdateOne(ctx, bson.M{"purchase_token": token},
-			bson.M{"$set": bson.M{"state": models.PurchaseRefunded, "reason": reason, "updated_at": time.Now()}})
 		return nil
 	}
 
@@ -244,9 +265,6 @@ func RevokePurchase(ctx context.Context, token, reason string) error {
 	if err != nil {
 		return fmt.Errorf("revoke stars: %w", err)
 	}
-
-	_, _ = starPurchases().UpdateOne(ctx, bson.M{"purchase_token": token},
-		bson.M{"$set": bson.M{"state": models.PurchaseRefunded, "reason": reason, "updated_at": time.Now()}})
 
 	if res.ModifiedCount > 0 {
 		appendLedger(ctx, models.StarLedgerEntry{

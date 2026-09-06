@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	appConfig "github.com/raushankrgupta/web-product-scraper/config"
 )
 
@@ -117,4 +119,56 @@ func GetPresignedURLWithExpiry(ctx context.Context, objectKey string, expiry tim
 	}
 
 	return request.URL, nil
+}
+
+// DeleteObjectsFromS3 removes objects by key, in batches of 1000 (the
+// DeleteObjects API limit). It reports the number actually deleted.
+//
+// Deletion is idempotent on S3's side — removing a key that is already gone is
+// not an error — so a retried purge is safe. Per-key failures are collected
+// and returned rather than aborting the batch: a purge that removed 40 of 41
+// objects is a much better outcome than one that stopped at the first error.
+func DeleteObjectsFromS3(ctx context.Context, keys []string) (int, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	if S3Client == nil {
+		if err := InitS3(); err != nil {
+			return 0, err
+		}
+	}
+
+	deleted := 0
+	var failures []string
+
+	for start := 0; start < len(keys); start += 1000 {
+		end := start + 1000
+		if end > len(keys) {
+			end = len(keys)
+		}
+
+		ids := make([]types.ObjectIdentifier, 0, end-start)
+		for _, k := range keys[start:end] {
+			ids = append(ids, types.ObjectIdentifier{Key: aws.String(k)})
+		}
+
+		out, err := S3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(appConfig.AWSBucketName),
+			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
+		})
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("batch at %d: %v", start, err))
+			continue
+		}
+		deleted += end - start - len(out.Errors)
+		for _, e := range out.Errors {
+			failures = append(failures, fmt.Sprintf("%s: %s", aws.ToString(e.Key), aws.ToString(e.Message)))
+		}
+	}
+
+	if len(failures) > 0 {
+		return deleted, fmt.Errorf("deleted %d/%d objects; failures: %s",
+			deleted, len(keys), strings.Join(failures, "; "))
+	}
+	return deleted, nil
 }

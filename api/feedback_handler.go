@@ -41,10 +41,13 @@ func FeedbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce strict upload limit (10MB) to prevent disk exhaustion DoS
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
 	// Parse multipart form
 	err = r.ParseMultipartForm(10 << 20) // 10 MB limit
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, "Error parsing form data", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Error parsing form data: payload too large", http.StatusBadRequest)
 		return
 	}
 

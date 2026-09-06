@@ -47,6 +47,9 @@ func GenerateGuestToken(userID string) (string, error) {
 // ValidateToken parses and validates the token
 func ValidateToken(tokenString string) (*jwt.Token, error) {
 	jwtSecret := []byte(os.Getenv("JWT_SECRET"))
+	if len(jwtSecret) == 0 {
+		return nil, fmt.Errorf("JWT_SECRET is not configured on the server")
+	}
 
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -54,6 +57,12 @@ func ValidateToken(tokenString string) (*jwt.Token, error) {
 		}
 		return jwtSecret, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	if token == nil || !token.Valid {
+		return nil, fmt.Errorf("invalid token")
+	}
 
-	return token, err
+	return token, nil
 }

@@ -50,9 +50,7 @@ func (s *MyntraScraper) ScrapeProduct(url string) (*models.Product, error) {
 			// We can try to take substring
 			sub := text[start:]
 			sub = strings.TrimSpace(sub)
-			if strings.HasSuffix(sub, ";") {
-				sub = sub[:len(sub)-1]
-			}
+			sub = strings.TrimSuffix(sub, ";")
 			jsonStr = sub
 		}
 	})

@@ -223,18 +223,46 @@ func RedeemReferral(ctx context.Context, refereeUserID, refereeEmail, rawCode st
 		return nil, ErrReferralWindow
 	}
 
+	// Reserve a redemption slot atomically, so two friends racing on the last
+	// slot of a code cannot both pass the cap. Only the slot is claimed here:
+	// stars_earned records stars that were actually granted, and moves below
+	// once the grant succeeds — claiming it up front inflated the referrer's
+	// displayed total every time a grant failed.
 	var owner models.ReferralCode
-	if err := referralCodes().FindOne(ctx, bson.M{"_id": code}).Decode(&owner); err != nil {
+	err := referralCodes().FindOneAndUpdate(
+		ctx,
+		bson.M{
+			"_id":         code,
+			"redemptions": bson.M{"$lt": cfg.MaxRedemptionsPerReferrer},
+		},
+		bson.M{"$inc": bson.M{"redemptions": 1}},
+	).Decode(&owner)
+
+	if err != nil {
 		if err == mongo.ErrNoDocuments {
+			var check models.ReferralCode
+			if chkErr := referralCodes().FindOne(ctx, bson.M{"_id": code}).Decode(&check); chkErr == nil {
+				return nil, ErrReferralExhausted
+			}
 			return nil, ErrReferralCodeUnknown
 		}
-		return nil, fmt.Errorf("look up referral code: %w", err)
+		return nil, fmt.Errorf("reserve referral redemption: %w", err)
 	}
+
+	// releaseSlot hands the reservation back on the paths that turn out not
+	// to be a redemption at all. Best-effort: the redemption documents are
+	// the truth and this counter is advisory, so a failure here costs one
+	// slot on one code rather than correctness.
+	releaseSlot := func() {
+		if _, err := referralCodes().UpdateOne(ctx, bson.M{"_id": code},
+			bson.M{"$inc": bson.M{"redemptions": -1}}); err != nil {
+			slog.Warn("referral slot release failed", "code", code, "error", err)
+		}
+	}
+
 	if owner.UserID == refereeUserID {
+		releaseSlot()
 		return nil, ErrReferralSelf
-	}
-	if owner.Redemptions >= cfg.MaxRedemptionsPerReferrer {
-		return nil, ErrReferralExhausted
 	}
 
 	redemption := models.ReferralRedemption{
@@ -247,6 +275,7 @@ func RedeemReferral(ctx context.Context, refereeUserID, refereeEmail, rawCode st
 		CreatedAt:        time.Now(),
 	}
 	if _, err := referralRedemptions().InsertOne(ctx, redemption); err != nil {
+		releaseSlot()
 		if mongo.IsDuplicateKeyError(err) {
 			return nil, ErrReferralAlready
 		}
@@ -267,12 +296,11 @@ func RedeemReferral(ctx context.Context, refereeUserID, refereeEmail, rawCode st
 		slog.Error("referral referrer grant failed after redemption was recorded",
 			"user_id", owner.UserID, "code", code, "error", err)
 	} else {
-		// Counters are advisory (the redemption documents are the truth), so
-		// a failure to bump them must not fail the redemption.
-		if _, err := referralCodes().UpdateOne(ctx,
-			bson.M{"_id": code},
-			bson.M{"$inc": bson.M{"redemptions": 1, "stars_earned": cfg.ReferrerStars}},
-		); err != nil {
+		// Stars are on the referrer's balance now, so the advisory counter
+		// can follow. A failure leaves the counter low, which is the safe
+		// direction to be wrong in.
+		if _, err := referralCodes().UpdateOne(ctx, bson.M{"_id": code},
+			bson.M{"$inc": bson.M{"stars_earned": cfg.ReferrerStars}}); err != nil {
 			slog.Warn("referral counter update failed", "code", code, "error", err)
 		}
 		if _, err := referralRedemptions().UpdateOne(ctx,

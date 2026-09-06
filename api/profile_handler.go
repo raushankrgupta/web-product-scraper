@@ -51,10 +51,13 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, _ := primitive.ObjectIDFromHex(userIdStr)
 
-	// Parse multipart form (max 10MB)
+	// Enforce strict upload limit (15MB) to prevent disk exhaustion DoS
+	r.Body = http.MaxBytesReader(w, r.Body, 15<<20)
+
+	// Parse multipart form (max 10MB in RAM)
 	err = r.ParseMultipartForm(10 << 20)
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, "Error parsing form data", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Error parsing form data: upload exceeds maximum allowed limit", http.StatusBadRequest)
 		return
 	}
 
@@ -92,17 +95,22 @@ func createPerson(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
-			objectKey := fmt.Sprintf("person_images/%s", filename)
+			func() {
+				defer file.Close()
+				objectKey, mime, err := utils.ValidateImageFile(file, "person_images")
+				if err != nil {
+					slog.Warn("rejected invalid image upload", "filename", fileHeader.Filename, "error", err)
+					return
+				}
 
-			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"), utils.CacheControlMutable)
-			file.Close()
-			if err != nil {
-				slog.Info(fmt.Sprintf("Failed to upload %s: %v", filename, err))
-				continue
-			}
+				_, err = utils.UploadFileToS3(r.Context(), file, objectKey, mime, utils.CacheControlMutable)
+				if err != nil {
+					slog.Info(fmt.Sprintf("Failed to upload %s: %v", objectKey, err))
+					return
+				}
 
-			imagePaths = append(imagePaths, objectKey)
+				imagePaths = append(imagePaths, objectKey)
+			}()
 		}
 	}
 
@@ -280,10 +288,13 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse multipart form (max 10MB)
+	// Enforce strict upload limit (15MB) to prevent disk exhaustion DoS
+	r.Body = http.MaxBytesReader(w, r.Body, 15<<20)
+
+	// Parse multipart form (max 10MB in RAM)
 	err = r.ParseMultipartForm(10 << 20)
 	if err != nil {
-		utils.RespondError(w, &logMessageBuilder, "Error parsing form data", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Error parsing form data: upload exceeds maximum allowed limit", http.StatusBadRequest)
 		return
 	}
 
@@ -359,16 +370,22 @@ func updatePerson(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
-			objectKey := fmt.Sprintf("person_images/%s", filename)
+			func() {
+				defer file.Close()
+				objectKey, mime, err := utils.ValidateImageFile(file, "person_images")
+				if err != nil {
+					slog.Warn("rejected invalid image upload", "filename", fileHeader.Filename, "error", err)
+					return
+				}
 
-			_, err = utils.UploadFileToS3(r.Context(), file, objectKey, fileHeader.Header.Get("Content-Type"), utils.CacheControlMutable)
-			file.Close()
-			if err != nil {
-				slog.Info(fmt.Sprintf("Failed to upload %s: %v", filename, err))
-				continue
-			}
-			imagePaths = append(imagePaths, objectKey)
+				_, err = utils.UploadFileToS3(r.Context(), file, objectKey, mime, utils.CacheControlMutable)
+				if err != nil {
+					slog.Info(fmt.Sprintf("Failed to upload %s: %v", objectKey, err))
+					return
+				}
+
+				imagePaths = append(imagePaths, objectKey)
+			}()
 		}
 		if len(imagePaths) > 0 {
 			updateFields["image_paths"] = imagePaths

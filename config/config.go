@@ -79,6 +79,8 @@ var (
 
 	// Environment tags every alert and gates the dev-only test route.
 	Environment string
+	// EnableDevRoutes explicitly permits mounting /internal development routes.
+	EnableDevRoutes bool
 	// AppVersion is injected at build time via -ldflags "-X main.version=...".
 	// main.go copies it here at boot.
 	AppVersion string
@@ -259,6 +261,12 @@ func LoadConfig() {
 	if Environment == "" {
 		Environment = "prod"
 	}
+	EnableDevRoutes = strings.ToLower(strings.TrimSpace(os.Getenv("ENABLE_DEV_ROUTES"))) == "true"
+
+	jwtSec := os.Getenv("JWT_SECRET")
+	if IsProd() && len(jwtSec) < 32 {
+		log.Println("[config] SECURITY WARNING: JWT_SECRET is missing or shorter than 32 characters in production!")
+	}
 
 	GeminiTimeoutSecs = envInt("GEMINI_TIMEOUT_SECS", 45)
 	GeminiMultiTimeoutSecs = envInt("GEMINI_MULTI_TIMEOUT_SECS", 90)
@@ -288,5 +296,7 @@ func LoadConfig() {
 }
 
 // IsProd reports whether this process is running in the production
-// environment. Used to gate dev-only routes.
-func IsProd() bool { return Environment == "prod" }
+// environment. Used to gate dev-only routes and enforce security constraints.
+func IsProd() bool {
+	return Environment == "prod" || Environment == "production"
+}

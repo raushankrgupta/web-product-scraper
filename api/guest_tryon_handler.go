@@ -41,9 +41,12 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce strict upload limit (15MB) to prevent disk exhaustion DoS
+	r.Body = http.MaxBytesReader(w, r.Body, 15<<20)
+
 	// 10MB cap matches /persons; gives enough headroom for a phone photo.
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		utils.RespondError(w, &logMessageBuilder, "Error parsing form", http.StatusBadRequest)
+		utils.RespondError(w, &logMessageBuilder, "Error parsing form: upload exceeds maximum allowed limit", http.StatusBadRequest)
 		return
 	}
 
@@ -60,8 +63,13 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer personFile.Close()
 
-	personKey := fmt.Sprintf("guest_uploads/person_%d_%s", time.Now().UnixNano(), sanitizeFilename(personFileHeader.Filename))
-	if _, err := utils.UploadFileToS3(r.Context(), personFile, personKey, personFileHeader.Header.Get("Content-Type"), utils.CacheControlMutable); err != nil {
+	personKey, personMIME, err := utils.ValidateImageFile(personFile, "guest_uploads/person")
+	if err != nil {
+		utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Invalid person image: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if _, err := utils.UploadFileToS3(r.Context(), personFile, personKey, personMIME, utils.CacheControlMutable); err != nil {
 		utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
 			"We couldn't save your photo. Please try again.", err, http.StatusInternalServerError)
 		return
@@ -103,8 +111,14 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer pf.Close()
-		productKey := fmt.Sprintf("guest_uploads/product_%d_%s", time.Now().UnixNano(), sanitizeFilename(productFileHeader.Filename))
-		if _, err := utils.UploadFileToS3(r.Context(), pf, productKey, productFileHeader.Header.Get("Content-Type"), utils.CacheControlImmutable); err != nil {
+
+		productKey, productMIME, err := utils.ValidateImageFile(pf, "guest_uploads/product")
+		if err != nil {
+			utils.RespondError(w, &logMessageBuilder, fmt.Sprintf("Invalid product image: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if _, err := utils.UploadFileToS3(r.Context(), pf, productKey, productMIME, utils.CacheControlImmutable); err != nil {
 			utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
 				"We couldn't save that product image. Please try again.", err, http.StatusInternalServerError)
 			return
@@ -289,26 +303,4 @@ func firstFile(r *http.Request, key string) *multipart.FileHeader {
 		return nil
 	}
 	return fhs[0]
-}
-
-// sanitizeFilename strips path separators so we never write to an unexpected
-// S3 key. Strict allow-list approach: keep only alphanumerics, dots, dashes
-// and underscores.
-func sanitizeFilename(name string) string {
-	var b strings.Builder
-	for _, ch := range name {
-		switch {
-		case ch >= 'a' && ch <= 'z',
-			ch >= 'A' && ch <= 'Z',
-			ch >= '0' && ch <= '9',
-			ch == '.', ch == '-', ch == '_':
-			b.WriteRune(ch)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	if b.Len() == 0 {
-		return "upload"
-	}
-	return b.String()
 }

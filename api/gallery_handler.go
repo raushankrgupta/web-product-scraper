@@ -91,6 +91,9 @@ func getGallery(w http.ResponseWriter, r *http.Request) {
 			limit = l
 		}
 	}
+	if limit > 50 {
+		limit = 50
+	}
 
 	// 3. Query Database
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Fetching gallery. Page: %d, Limit: %d, Filter: %s", page, limit, filterParam))

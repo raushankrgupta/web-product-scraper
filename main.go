@@ -334,7 +334,7 @@ func registerRoutes(mux *http.ServeMux) {
 	// cannot complete on a sideloaded build, so without a way to grant a
 	// balance directly, every paid path is untestable until an AAB reaches a
 	// Play track.
-	if !config.IsProd() {
+	if !config.IsProd() && config.EnableDevRoutes {
 		mux.Handle("/internal/alert-test", guard(post, http.HandlerFunc(api.AlertTestHandler)))
 		mux.Handle("/internal/stars", guard(post, http.HandlerFunc(api.DevStarsHandler)))
 	}

@@ -3,17 +3,20 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
+	"github.com/raushankrgupta/web-product-scraper/utils/alert"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -256,6 +259,45 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // VerifyOTPHandler handles OTP verification
+// maxOTPAttempts caps how many times a single OTP may be guessed before it is
+// burned and the user has to request a new one.
+const maxOTPAttempts = 5
+
+// consumeOTPAttempt reserves one verification attempt against the user's
+// allowance, atomically. It reports false once the allowance is spent, in
+// which case the caller must burn the OTP and refuse.
+//
+// The $exists arm is load-bearing. models.User tags otp_attempts `omitempty`,
+// so SignupHandler's struct insert omits the field entirely when it is zero —
+// and MongoDB's $lt does not match a missing field. A bare {$lt: 5} filter
+// therefore matched nothing for every freshly signed-up user, locking them out
+// of their own first verification attempt.
+func consumeOTPAttempt(ctx context.Context, collection *mongo.Collection, userID primitive.ObjectID) (bool, error) {
+	res, err := collection.UpdateOne(ctx,
+		bson.M{
+			"_id": userID,
+			"$or": []bson.M{
+				{"otp_attempts": bson.M{"$lt": maxOTPAttempts}},
+				{"otp_attempts": bson.M{"$exists": false}},
+			},
+		},
+		bson.M{"$inc": bson.M{"otp_attempts": 1}},
+	)
+	if err != nil {
+		return false, err
+	}
+	return res.ModifiedCount > 0, nil
+}
+
+// burnOTP clears a spent OTP so a user who has exhausted their attempts has to
+// start over from a freshly mailed code.
+func burnOTP(ctx context.Context, collection *mongo.Collection, userID primitive.ObjectID) {
+	_, _ = collection.UpdateOne(ctx, bson.M{"_id": userID}, bson.M{
+		"$unset": bson.M{"otp": "", "otp_expires_at": ""},
+		"$set":   bson.M{"otp_attempts": 0},
+	})
+}
+
 func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 	var logMessageBuilder strings.Builder
 	defer func() {
@@ -306,24 +348,33 @@ func VerifyOTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check maximum attempt threshold (5 attempts)
-	if user.OTPAttempts >= 5 {
-		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{
-			"$unset": bson.M{"otp": "", "otp_expires_at": ""},
-			"$set":   bson.M{"otp_attempts": 0},
-		})
+	// Spend an attempt before comparing. Reserving first is what makes the
+	// cap hold when two guesses race: both would otherwise read the same
+	// pre-increment count and each conclude it was under the limit.
+	allowed, err := consumeOTPAttempt(ctx, collection, user.ID)
+	if err != nil {
+		utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
+			"Something went wrong on our end. Please try again.", err, http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		burnOTP(ctx, collection, user.ID)
 		utils.RespondError(w, &logMessageBuilder, "Too many failed attempts. Please request a new OTP.", http.StatusTooManyRequests)
 		return
 	}
 
-	if user.OTP != req.OTP {
-		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$inc": bson.M{"otp_attempts": 1}})
+	// Constant-time OTP comparison to prevent timing attacks
+	if subtle.ConstantTimeCompare([]byte(user.OTP), []byte(req.OTP)) != 1 {
 		utils.RespondError(w, &logMessageBuilder, "Invalid OTP", http.StatusUnauthorized)
 		return
 	}
 
 	if user.Status == "verified" || user.Status == "active" {
 		// If verified/active and OTP matches, we assume it's for Password Reset flow.
+		// The OTP stays live for the reset call, so only the attempt counter is
+		// cleared here — a correct guess must not count against the allowance.
+		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID},
+			bson.M{"$set": bson.M{"otp_attempts": 0}})
 		utils.AddToLogMessage(&logMessageBuilder, "OTP verified for password reset")
 		utils.RespondJSON(w, http.StatusOK, map[string]string{
 			"message": "OTP verified successfully. Please proceed to reset password.",
@@ -493,18 +544,21 @@ func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check maximum attempt threshold
-	if user.OTPAttempts >= 5 {
-		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{
-			"$unset": bson.M{"otp": "", "otp_expires_at": ""},
-			"$set":   bson.M{"otp_attempts": 0},
-		})
+	// Same atomic allowance as VerifyOTPHandler: spend an attempt first, then
+	// compare, so concurrent guesses cannot share one slot.
+	allowed, err := consumeOTPAttempt(ctx, collection, user.ID)
+	if err != nil {
+		utils.RespondInternalError(w, r, &logMessageBuilder, "mongo",
+			"Something went wrong on our end. Please try again.", err, http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		burnOTP(ctx, collection, user.ID)
 		utils.RespondError(w, &logMessageBuilder, "Too many failed attempts. Please request a new OTP.", http.StatusTooManyRequests)
 		return
 	}
 
-	if user.OTP != req.OTP {
-		_, _ = collection.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$inc": bson.M{"otp_attempts": 1}})
+	if subtle.ConstantTimeCompare([]byte(user.OTP), []byte(req.OTP)) != 1 {
 		utils.RespondError(w, &logMessageBuilder, "Invalid OTP", http.StatusUnauthorized)
 		return
 	}
@@ -699,6 +753,20 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Erase the account's owned content: S3 objects deleted, the documents
+	// that referenced them soft-deleted. On its own context, because `ctx`
+	// above is a 10s budget sized for a single update and this walks three
+	// collections plus S3.
+	//
+	// A failure must not fail the deletion — the account is already
+	// tombstoned and the user is entitled to that regardless. PurgeUserData
+	// is idempotent, so the alert is a prompt to re-run it, not a dead end.
+	purgeCtx, purgeCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer purgeCancel()
+	if err := utils.PurgeUserData(purgeCtx, userIdStr); err != nil {
+		alert.Errorf("privacy", "account data purge did not complete", err, "user_id", userIdStr)
+	}
+
 	utils.AddToLogMessage(&logMessageBuilder, "Account deleted successfully")
 	utils.RespondJSON(w, http.StatusOK, map[string]string{
 		"message": "Account deleted successfully. You have been logged out.",
@@ -813,7 +881,8 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Fallback: Check if it's an ID Token instead
-		idTokenResp, idErr := http.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + req.GoogleToken)
+		idTokenURL := "https://oauth2.googleapis.com/tokeninfo?id_token=" + url.QueryEscape(req.GoogleToken)
+		idTokenResp, idErr := client.Get(idTokenURL)
 		if idErr == nil && idTokenResp.StatusCode == http.StatusOK {
 			resp = idTokenResp
 		} else {
@@ -839,7 +908,8 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If Aud/Azp wasn't provided by userinfo, fetch from tokeninfo
 	if googleUser.Aud == "" && googleUser.Azp == "" {
-		tiResp, tiErr := client.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + req.GoogleToken)
+		tokenInfoURL := "https://oauth2.googleapis.com/tokeninfo?id_token=" + url.QueryEscape(req.GoogleToken)
+		tiResp, tiErr := client.Get(tokenInfoURL)
 		if tiErr == nil && tiResp.StatusCode == http.StatusOK {
 			var ti struct {
 				Aud string `json:"aud"`
@@ -873,10 +943,23 @@ func GoogleLoginHandler(w http.ResponseWriter, r *http.Request) {
 			utils.RespondError(w, &logMessageBuilder, "Unauthorized: Invalid Google token audience", http.StatusUnauthorized)
 			return
 		}
+	} else if config.IsProd() {
+		slog.Error("google login rejected: GOOGLE_CLIENT_ID must be configured in production")
+		utils.RespondError(w, &logMessageBuilder, "Google login is not properly configured on server", http.StatusInternalServerError)
+		return
 	}
 
-	// Verify email is verified if specified
-	if ev, ok := googleUser.EmailVerified.(bool); ok && !ev {
+	// Verify email is verified across both boolean and string representations
+	emailVerified := false
+	switch v := googleUser.EmailVerified.(type) {
+	case bool:
+		emailVerified = v
+	case string:
+		emailVerified = strings.ToLower(strings.TrimSpace(v)) == "true"
+	default:
+		emailVerified = false
+	}
+	if !emailVerified {
 		utils.RespondError(w, &logMessageBuilder, "Google email is not verified", http.StatusUnauthorized)
 		return
 	}
