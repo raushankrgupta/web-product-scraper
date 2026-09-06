@@ -1,5 +1,5 @@
 # Start with Go base image (Debian-based)
-FROM golang:1.24
+FROM golang:1.25
 
 # 1. Install Chromium and the Driver
 # This installs both the browser and the matching driver automatically.
