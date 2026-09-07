@@ -6,55 +6,16 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 )
 
-type guestRateLimiter struct {
-	sync.Mutex
-	history map[string][]time.Time
-}
-
-var guestLimiter = &guestRateLimiter{
-	history: make(map[string][]time.Time),
-}
-
-func (l *guestRateLimiter) allow(ip string, limit int, window time.Duration) bool {
-	l.Lock()
-	defer l.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-window)
-
-	var valid []time.Time
-	for _, t := range l.history[ip] {
-		if t.After(cutoff) {
-			valid = append(valid, t)
-		}
-	}
-
-	if len(valid) >= limit {
-		l.history[ip] = valid
-		return false
-	}
-
-	valid = append(valid, now)
-	l.history[ip] = valid
-
-	// Memory leak prevention: periodic pruning of expired IP entries
-	if len(l.history) > 5000 {
-		for k, timestamps := range l.history {
-			if len(timestamps) == 0 || timestamps[len(timestamps)-1].Before(cutoff) {
-				delete(l.history, k)
-			}
-		}
-	}
-
-	return true
-}
+// guestLimiter caps guest-token minting per IP. It is a keyedLimiter (see
+// ratelimit.go) kept under its old name so the call site and its test read as
+// before.
+var guestLimiter = newKeyedLimiter()
 
 func clientIP(r *http.Request) string {
 	// Trust CF-Connecting-IP first if behind Cloudflare

@@ -149,9 +149,77 @@ Manage user profiles ("persons").
 
 ---
 
-## Products & Scraping (Protected)
+## App Config (Public)
 
-### 1. Scrape Product
+### 1. Get App Config
+- **Endpoint**: `GET /app/config`
+- **Auth**: none. Cached `public, max-age=300`, supports `If-None-Match`/`ETag`.
+- **Purpose**: remote switchboard for Link Import (which fetch path a client uses, limits, blocked hosts). Clients embed defaults for every field and tolerate unknown fields.
+- **Response**: `200 OK`
+  ```json
+  {
+    "schema": 1,
+    "generated_at": "2026-09-07T10:00:00Z",
+    "min_app_version": "2.3.4",
+    "link_import": {
+      "mode": "device",
+      "max_images": 6,
+      "max_candidates": 60,
+      "min_image_px": 200,
+      "upload_max_edge": 1024,
+      "jpeg_quality": 0.7,
+      "blocked_hosts": [],
+      "notice_version": 1
+    },
+    "server_scrape": { "mode": "deprecated", "sunset": "2026-11-30" }
+  }
+  ```
+  Env: `LINK_IMPORT_MODE`, `SERVER_SCRAPE_MODE`, `SERVER_SCRAPE_SUNSET`, `LINK_IMPORT_BLOCKED_HOSTS`, `LINK_IMPORT_MAX_IMAGES`, `LINK_IMPORT_MAX_CANDIDATES`, `LINK_IMPORT_NOTICE_VERSION`, `MIN_APP_VERSION`.
+
+---
+
+## Tutorials (Public)
+
+### 1. List Tutorial Videos
+- **Endpoint**: `GET /tutorials`
+- **Auth**: none. Cached `public, max-age=300`, supports `ETag`.
+- **Source**: the TryOnFusion YouTube channel's public Atom feed (`YOUTUBE_CHANNEL_ID`), re-read every `TUTORIALS_CACHE_SECS` (default 3600). New uploads appear automatically; `TUTORIALS_HIDDEN_VIDEO_IDS` hides specific videos.
+- **Response**: `200 OK`
+  ```json
+  {
+    "channel": { "id": "UC…", "handle": "@tryonfusion", "title": "TryOnFusion: Virtual Try-On", "url": "https://www.youtube.com/@tryonfusion" },
+    "videos": [
+      { "id": "kQAttI5WVzw", "title": "TryOnFusion: Demo", "description": "…", "published_at": "2026-05-25T19:08:12Z",
+        "updated_at": "…", "thumbnail_url": "https://i4.ytimg.com/vi/kQAttI5WVzw/hqdefault.jpg",
+        "url": "https://www.youtube.com/shorts/kQAttI5WVzw",
+        "embed_url": "https://www.youtube-nocookie.com/embed/kQAttI5WVzw?playsinline=1&rel=0&modestbranding=1",
+        "is_short": true, "views": 11 }
+    ],
+    "fetched_at": "…",
+    "stale": false
+  }
+  ```
+- `503` only when the feed has never been fetched successfully in this process.
+
+---
+
+## Products (Protected)
+
+Clients send `X-App-Version` and `X-Platform` headers from app 2.4.0. Their absence identifies a legacy client.
+
+### 1. Upload Product Images
+- **Endpoint**: `POST /product/upload` (multipart/form-data)
+- **Fields**:
+  - `images` — 1..8 files (JPEG/PNG/WebP, validated by magic bytes; 15 MB body cap)
+  - `source` — optional: `user_upload` (default) | `link_import`
+  - `source_url` — required when `source=link_import`. Stored as a reference (tracking params stripped); **never fetched by the server**.
+  - `title` — optional, ≤ 200 chars
+  - `import_method` — optional analytics label: `dom_pick | tap | in_page_fetch | screenshot | mixed`
+  - `page_host` — optional; derived from `source_url` when absent
+- **Response**: `201 Created` with the Product document (presigned `image_paths`).
+- **Errors**: `400 {"reason":"invalid_request"}` (bad `source`/`source_url`), `400 {"reason":"too_many_images"}`, `429 {"reason":"rate_limited"}` (60 uploads/hour/user).
+
+### 2. Scrape Product (LEGACY — clients ≤ 2.3.4 only)
 - **Endpoint**: `POST /product/details`
 - **Body**:
   ```json
@@ -161,6 +229,11 @@ Manage user profiles ("persons").
   ```
   (Can also use query param `?url=...` with GET/POST)
 - **Response**: `200 OK` (returns scraped product details including images).
+- **Gating** (`SERVER_SCRAPE_MODE`):
+  - `enabled` — as before
+  - `deprecated` (default) — as before, plus `Deprecation: true` and `Sunset: <date>` headers
+  - `disabled` — `410 Gone {"error":"…update TryOnFusion…","reason":"update_required"}`. Legacy apps map the unknown reason to `scrape_failed` and offer their screenshot-upload path.
+- New clients in `link_import.mode = "device"` never call this endpoint. The same gate applies to a url-only `POST /try-on/guest`; when `product_image` is present the URL is stored as a reference and **not** scraped.
 
 ---
 

@@ -40,9 +40,7 @@ func TestClientIP(t *testing.T) {
 }
 
 func TestGuestRateLimiter(t *testing.T) {
-	limiter := &guestRateLimiter{
-		history: make(map[string][]time.Time),
-	}
+	limiter := newKeyedLimiter()
 
 	ip := "192.0.2.10"
 	// Should allow up to limit 3

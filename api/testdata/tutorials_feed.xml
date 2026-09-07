@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+ <link rel="self" href="http://www.youtube.com/feeds/videos.xml?channel_id=UCQB5MrETb40fYZ6KPBdZd6g"/>
+ <id>yt:channel:QB5MrETb40fYZ6KPBdZd6g</id>
+ <yt:channelId>QB5MrETb40fYZ6KPBdZd6g</yt:channelId>
+ <title>TryOnFusion: Virtual Try-On</title>
+ <link rel="alternate" href="https://www.youtube.com/channel/UCQB5MrETb40fYZ6KPBdZd6g"/>
+ <author>
+  <name>TryOnFusion: Virtual Try-On</name>
+  <uri>https://www.youtube.com/channel/UCQB5MrETb40fYZ6KPBdZd6g</uri>
+ </author>
+ <published>2022-05-10T17:13:44+00:00</published>
+ <entry>
+  <id>yt:video:kQAttI5WVzw</id>
+  <yt:videoId>kQAttI5WVzw</yt:videoId>
+  <yt:channelId>UCQB5MrETb40fYZ6KPBdZd6g</yt:channelId>
+  <title>TryOnFusion: Demo</title>
+  <link rel="alternate" href="https://www.youtube.com/shorts/kQAttI5WVzw"/>
+  <author>
+   <name>TryOnFusion: Virtual Try-On</name>
+   <uri>https://www.youtube.com/channel/UCQB5MrETb40fYZ6KPBdZd6g</uri>
+  </author>
+  <published>2026-05-25T19:08:12+00:00</published>
+  <updated>2026-08-28T13:26:26+00:00</updated>
+  <media:group>
+   <media:title>TryOnFusion: Demo</media:title>
+   <media:content url="https://www.youtube.com/v/kQAttI5WVzw?version=3" type="application/x-shockwave-flash" width="640" height="390"/>
+   <media:thumbnail url="https://i4.ytimg.com/vi/kQAttI5WVzw/hqdefault.jpg" width="480" height="360"/>
+   <media:description>TryOnFusion lets you virtually try on outfits from any store</media:description>
+   <media:community>
+    <media:starRating count="1" average="5.00" min="1" max="5"/>
+    <media:statistics views="11"/>
+   </media:community>
+  </media:group>
+ </entry>
+</feed>
