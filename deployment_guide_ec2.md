@@ -144,6 +144,17 @@ AWS_SECRET_ACCESS_KEY=your_aws_secret
 # runs on a dynamic IP Myntra doesn't block. Leave SERVER_B_SCRAPE_URL empty to
 # keep scraping Myntra locally. INTERNAL_API_SECRET must match server B's value.
 SERVER_B_SCRAPE_URL=https://your-server-b-host/internal/scrape
+
+# --- Link Import (app >= 2.4.0 imports product links on the device) ---
+# Server-side scraping is kept only for legacy clients. See
+# fitly-app/docs/USER_SIDE_LINK_IMPORT_PLAN.md and .env.example.
+LINK_IMPORT_MODE=device
+SERVER_SCRAPE_MODE=deprecated
+SERVER_SCRAPE_SUNSET=
+LINK_IMPORT_BLOCKED_HOSTS=
+GRIEVANCE_OFFICER_NAME=
+GRIEVANCE_EMAIL=
+LEGAL_POSTAL_ADDRESS=
 INTERNAL_API_SECRET=the_same_long_random_secret_as_server_B
 ```
 *Press `Ctrl+O`, `Enter` to save, and `Ctrl+X` to exit.*

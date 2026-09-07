@@ -25,8 +25,11 @@ import (
 // Multipart fields:
 //
 //	person_image      — required, the user's photo
-//	product_url       — optional, will be scraped if present
-//	product_image     — optional, used instead of/in addition to product_url
+//	product_url       — optional. Scraped ONLY when product_image is absent
+//	                    (legacy clients); otherwise stored as a reference.
+//	product_image     — optional, the garment image (from the gallery, or
+//	                    imported on-device from product_url by clients >= 2.4.0)
+//	import_method     — optional, analytics only (see models.Product.ImportMethod)
 //	person_details    — optional, free-text body description ("F, 170cm, ...")
 //	special_request   — optional, free-text styling note (capped, sanitised)
 //
@@ -102,6 +105,23 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clients >= 2.4.0 import the garment image on the device and send it as
+	// product_image, with product_url attached purely as the "where this came
+	// from" reference. The server must not fetch that page: doing so would
+	// quietly re-create the operator-side scraping the device path exists to
+	// remove. Only a url-only request (a legacy client) is scraped, and that
+	// path is gated like /product/details.
+	scrapeProductURL := productURL != "" && productFileHeader == nil
+	if productURL != "" && productFileHeader != nil {
+		utils.AddToLogMessage(&logMessageBuilder, "product_url kept as reference; not scraped (client-imported image present)")
+	}
+	if scrapeProductURL {
+		guestUserID, _ := GetUserIDFromContext(r.Context())
+		if serverScrapeGate(w, r, &logMessageBuilder, guestUserID, productURL, "guest") {
+			return
+		}
+	}
+
 	var productImageURLs []string
 
 	if productFileHeader != nil {
@@ -129,9 +149,8 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if productURL != "" {
-		// Best-effort scrape. If it fails we still proceed with any uploaded
-		// product_image (don't block the user on a flaky scraper).
+	if scrapeProductURL {
+		// Legacy clients only. Best-effort scrape of a url-only request.
 		//
 		// Myntra blocks this server's datacenter IP, so when server B is
 		// configured we delegate Myntra URLs to it; everything else (and all

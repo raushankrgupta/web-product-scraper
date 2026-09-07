@@ -196,6 +196,16 @@ func NormalizeProductURL(raw string) (string, error) {
 		return "", err
 	}
 
+	stripTrackingParams(u)
+
+	return u.String(), nil
+}
+
+// stripTrackingParams removes referral-only query keys and the fragment.
+// Shared by NormalizeProductURL (server scrape) and ValidateReferenceURL
+// (device import) so the same product link is stored identically whichever
+// path produced it.
+func stripTrackingParams(u *url.URL) {
 	q := u.Query()
 	for k := range q {
 		lk := strings.ToLower(k)
@@ -205,8 +215,61 @@ func NormalizeProductURL(raw string) (string, error) {
 	}
 	u.RawQuery = q.Encode()
 	u.Fragment = ""
+}
 
+// MaxReferenceURLLen bounds a source_url stored as metadata.
+const MaxReferenceURLLen = 2048
+
+// ValidateReferenceURL cleans a URL the server will only ever STORE — the
+// page a user imported images from — and never fetch.
+//
+// Deliberately weaker than NormalizeProductURL: no DNS resolution, no SSRF
+// check. Those defences protect an outbound request, and there is none here;
+// resolving every imported link would also add a network round trip (and a
+// failure mode) to an upload that has nothing to do with the network. What
+// it does enforce is that the string is a real http(s) URL of sane length
+// with tracking parameters removed, so a `javascript:` payload or a 50 KB
+// blob cannot be persisted as a "product link" and later handed to a client
+// that opens it.
+func ValidateReferenceURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if i := strings.IndexAny(s, " \t\r\n"); i > 0 {
+		s = s[:i]
+	}
+	if s == "" {
+		return "", fmt.Errorf("empty url")
+	}
+	if len(s) > MaxReferenceURLLen {
+		return "", fmt.Errorf("url longer than %d characters", MaxReferenceURLLen)
+	}
+	if !strings.Contains(s, "://") {
+		s = "https://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", err
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("unsupported url scheme %q", u.Scheme)
+	}
+	u.Scheme = scheme
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("url has no host")
+	}
+	u.User = nil // never persist embedded credentials
+	stripTrackingParams(u)
 	return u.String(), nil
+}
+
+// HostOfURL returns the lower-cased hostname of raw with a leading "www."
+// removed, or "" when raw does not parse. For analytics grouping.
+func HostOfURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	return strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 }
 
 // ResolveShortenedURL follows redirects to find the final URL with anti-SSRF enforcement

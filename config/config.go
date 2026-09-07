@@ -125,6 +125,67 @@ var (
 	// behaviour), which is kept as the default so an unconfigured deployment
 	// doesn't suddenly break the mobile app.
 	AllowedOrigins []string
+
+	// --- Link Import (device-side product capture) ---
+	//
+	// Product links used to be fetched by THIS server: our IP, our headless
+	// browser, our copy of the retailer's images. That put the company in the
+	// position of the party accessing and copying third-party sites. Clients
+	// from 2.4.0 instead open the link in an isolated in-app browser on the
+	// user's phone, let the user pick images, and upload those through
+	// /product/upload like any gallery photo. The server never contacts the
+	// retailer. See fitly-app/docs/USER_SIDE_LINK_IMPORT_PLAN.md.
+	//
+	// LinkImportMode tells NEW clients (via GET /app/config) what to do:
+	//   "device" (default) — in-app browser, no server fetch
+	//   "server"           — emergency rollback: call /product/details as
+	//                        legacy clients do. Re-creates operator liability;
+	//                        use only while a device-mode bug is being fixed.
+	LinkImportMode string
+	// ServerScrapeMode governs the LEGACY endpoints (POST /product/details and
+	// a url-only guest try-on), which only clients <= 2.3.4 call:
+	//   "enabled"    — scrape as before, no signal
+	//   "deprecated" (default) — scrape as before, add Deprecation/Sunset headers
+	//   "disabled"   — 410 with reason "update_required"; the legacy app's
+	//                  failure sheet already offers the screenshot-upload path
+	ServerScrapeMode string
+	// ServerScrapeSunset is the date advertised in the Sunset header, e.g.
+	// "2026-11-30". Informational.
+	ServerScrapeSunset string
+	// LinkImportBlockedHosts are hosts the in-app browser must refuse to open
+	// (a cease-and-desist can be honoured without an app release). Lower-cased;
+	// a client matches the host and every subdomain of it.
+	LinkImportBlockedHosts []string
+	// LinkImportMaxImages caps how many images one import may upload (1..8).
+	LinkImportMaxImages int
+	// LinkImportMaxCandidates caps how many image URLs the injected page
+	// script may report to the client.
+	LinkImportMaxCandidates int
+	// LinkImportNoticeVersion forces the in-app "you are browsing this site
+	// yourself" notice to be shown again when bumped (e.g. after a Terms change).
+	LinkImportNoticeVersion int
+	// MinAppVersion is advertised to clients that read /app/config. Purely
+	// informational; the server does not refuse older clients on its own.
+	MinAppVersion string
+
+	// --- Legal / intermediary compliance ---
+	//
+	// The IT (Intermediary Guidelines) Rules, 2021 require the grievance
+	// officer's name and contact to be published. Rendered into the Terms.
+	GrievanceOfficerName string
+	GrievanceEmail       string
+	LegalPostalAddress   string
+
+	// --- Tutorials (YouTube channel feed) ---
+	//
+	// GET /tutorials lists the channel's uploads by reading its public Atom
+	// feed. Publishing a video is the only step needed for it to appear in
+	// the app; a video can be hidden from the app without unlisting it by
+	// adding its id to TUTORIALS_HIDDEN_VIDEO_IDS.
+	YouTubeChannelID        string
+	YouTubeChannelHandle    string
+	TutorialsCacheSecs      int
+	TutorialsHiddenVideoIDs []string
 )
 
 // envInt reads an integer env var, falling back to def when unset or invalid.
@@ -293,6 +354,110 @@ func LoadConfig() {
 			AllowedOrigins = append(AllowedOrigins, o)
 		}
 	}
+
+	loadLinkImportConfig()
+	loadTutorialsConfig()
+}
+
+// loadTutorialsConfig reads the YouTube feed settings.
+func loadTutorialsConfig() {
+	YouTubeChannelID = strings.TrimSpace(os.Getenv("YOUTUBE_CHANNEL_ID"))
+	if YouTubeChannelID == "" {
+		YouTubeChannelID = "UCQB5MrETb40fYZ6KPBdZd6g" // youtube.com/@tryonfusion
+	}
+	YouTubeChannelHandle = strings.TrimSpace(os.Getenv("YOUTUBE_CHANNEL_HANDLE"))
+	if YouTubeChannelHandle == "" {
+		YouTubeChannelHandle = "@tryonfusion"
+	}
+	if !strings.HasPrefix(YouTubeChannelHandle, "@") {
+		YouTubeChannelHandle = "@" + YouTubeChannelHandle
+	}
+	TutorialsCacheSecs = envInt("TUTORIALS_CACHE_SECS", 3600)
+	TutorialsHiddenVideoIDs = nil
+	for _, id := range strings.Split(os.Getenv("TUTORIALS_HIDDEN_VIDEO_IDS"), ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			TutorialsHiddenVideoIDs = append(TutorialsHiddenVideoIDs, id)
+		}
+	}
+}
+
+// loadLinkImportConfig reads the Link Import / legacy-scrape switches. Kept
+// separate so tests can exercise the validation without a full LoadConfig.
+func loadLinkImportConfig() {
+	LinkImportMode = envEnum("LINK_IMPORT_MODE", "device", "device", "server")
+	ServerScrapeMode = envEnum("SERVER_SCRAPE_MODE", "deprecated", "enabled", "deprecated", "disabled")
+	ServerScrapeSunset = strings.TrimSpace(os.Getenv("SERVER_SCRAPE_SUNSET"))
+
+	// Contradictory: new clients would be told to use an endpoint that refuses
+	// them, and unlike a bad enum there is no sensible default to fall back
+	// to. Fail loudly at boot rather than silently break every link import.
+	if LinkImportMode == "server" && ServerScrapeMode == "disabled" {
+		log.Fatal("[config] LINK_IMPORT_MODE=server together with SERVER_SCRAPE_MODE=disabled is contradictory: " +
+			"new clients would be directed to a disabled endpoint. Fix one of them.")
+	}
+
+	LinkImportBlockedHosts = nil
+	for _, h := range strings.Split(os.Getenv("LINK_IMPORT_BLOCKED_HOSTS"), ",") {
+		h = strings.ToLower(strings.TrimSpace(h))
+		h = strings.TrimPrefix(h, "www.")
+		if h != "" {
+			LinkImportBlockedHosts = append(LinkImportBlockedHosts, h)
+		}
+	}
+
+	LinkImportMaxImages = envInt("LINK_IMPORT_MAX_IMAGES", 6)
+	if LinkImportMaxImages > 8 {
+		log.Printf("[config] LINK_IMPORT_MAX_IMAGES=%d exceeds the upload cap of 8, using 8", LinkImportMaxImages)
+		LinkImportMaxImages = 8
+	}
+	LinkImportMaxCandidates = envInt("LINK_IMPORT_MAX_CANDIDATES", 60)
+	LinkImportNoticeVersion = envInt("LINK_IMPORT_NOTICE_VERSION", 1)
+	MinAppVersion = strings.TrimSpace(os.Getenv("MIN_APP_VERSION"))
+	if MinAppVersion == "" {
+		MinAppVersion = "2.3.4"
+	}
+
+	GrievanceOfficerName = strings.TrimSpace(os.Getenv("GRIEVANCE_OFFICER_NAME"))
+	GrievanceEmail = strings.TrimSpace(os.Getenv("GRIEVANCE_EMAIL"))
+	if GrievanceEmail == "" {
+		GrievanceEmail = ContactEmail
+	}
+	LegalPostalAddress = strings.TrimSpace(os.Getenv("LEGAL_POSTAL_ADDRESS"))
+	if IsProd() && GrievanceOfficerName == "" {
+		log.Println("[config] GRIEVANCE_OFFICER_NAME is empty — the Terms will render without a named grievance officer, which the IT Rules 2021 require")
+	}
+}
+
+// envEnum reads a lower-cased string env var that must be one of allowed,
+// falling back to def (with a log line) on anything else.
+func envEnum(key, def string, allowed ...string) string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	for _, a := range allowed {
+		if v == a {
+			return v
+		}
+	}
+	log.Printf("[config] %s=%q is not one of %v, using %q", key, v, allowed, def)
+	return def
+}
+
+// HostBlockedForLinkImport reports whether host (or a parent domain of it) is
+// on the LINK_IMPORT_BLOCKED_HOSTS list. Case-insensitive; a leading "www."
+// is ignored on both sides.
+func HostBlockedForLinkImport(host string) bool {
+	h := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(host)), "www.")
+	if h == "" {
+		return false
+	}
+	for _, b := range LinkImportBlockedHosts {
+		if h == b || strings.HasSuffix(h, "."+b) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsProd reports whether this process is running in the production

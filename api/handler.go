@@ -126,6 +126,13 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Scraping URL query: %s", productURL))
 
+	// Legacy path. Clients >= 2.4.0 never reach this endpoint in device mode,
+	// so every call here is either an old install or a rollback. The gate
+	// decides whether we still scrape for them at all.
+	if serverScrapeGate(w, r, &logMessageBuilder, userID, productURL, "app") {
+		return
+	}
+
 	// Myntra blocks this server's datacenter IP. When server B (which runs on
 	// a dynamic IP Myntra doesn't block) is configured, delegate Myntra scrapes
 	// to it — B performs the full scrape, S3 upload and persistence, and we
@@ -272,4 +279,52 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.RespondJSON(w, http.StatusOK, product)
+}
+
+// serverScrapeGate applies config.ServerScrapeMode to a legacy server-side
+// scrape request. It reports true when it has written the response and the
+// caller must return.
+//
+// The endpoint exists for clients that cannot be updated by us, so the two
+// live modes are designed around what THEY do with the answer:
+//
+//   - deprecated: scrape as before, but add Deprecation/Sunset headers. The
+//     legacy app ignores them; they are for anyone reading the traffic.
+//   - disabled: 410 with reason "update_required". The legacy app has never
+//     seen that reason, and its scrapeFailureReason() maps anything unknown to
+//     "scrape_failed" — the sheet that offers "try again" and the
+//     screenshot-upload path. So the old app degrades to its own fallback
+//     instead of breaking. The guest screen shows the message verbatim.
+//
+// Every disabled hit is recorded as a failed product row: it is the count
+// that decides when the scraper code can be deleted.
+func serverScrapeGate(w http.ResponseWriter, r *http.Request, logger *strings.Builder, userID, productURL, flow string) bool {
+	clientVersion := r.Header.Get("X-App-Version")
+	if clientVersion == "" {
+		clientVersion = "legacy"
+	}
+	utils.L(r.Context()).Info("legacy server scrape requested",
+		"mode", config.ServerScrapeMode, "client_version", clientVersion,
+		"flow", flow, "host", hostOf(productURL))
+
+	switch config.ServerScrapeMode {
+	case "disabled":
+		recordScrapeFailure(userID, productURL, "", hostOf(productURL), "", "update_required", flow,
+			"server scraping disabled; client must update to link import (client_version="+clientVersion+")")
+		if config.ServerScrapeSunset != "" {
+			w.Header().Set("Sunset", config.ServerScrapeSunset)
+		}
+		msg := "Fetching from links now happens inside the app. Please update TryOnFusion from the Play Store, or upload a screenshot of the outfit instead."
+		if flow == "guest" {
+			msg = "Link try-on now happens inside the app. Please update TryOnFusion from the Play Store, or upload a photo of the outfit instead."
+		}
+		utils.RespondErrorReason(w, logger, msg, "update_required", http.StatusGone)
+		return true
+	case "deprecated":
+		w.Header().Set("Deprecation", "true")
+		if config.ServerScrapeSunset != "" {
+			w.Header().Set("Sunset", config.ServerScrapeSunset)
+		}
+	}
+	return false
 }

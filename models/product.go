@@ -16,13 +16,19 @@ type Variant struct {
 
 // Product represents the scraped product details
 type Product struct {
-	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	UserID      string             `bson:"user_id" json:"user_id"`
-	Source      string             `bson:"source" json:"source"` // "link" or "user_upload"
-	URL         string             `bson:"url" json:"url"`       // Original product URL (optional if user_upload)
-	ResolvedURL string             `bson:"resolved_url,omitempty" json:"resolved_url,omitempty"`
-	Status      string             `bson:"status" json:"status"`                                 // "success", "failed"
-	ScrapeError string             `bson:"scrape_error,omitempty" json:"scrape_error,omitempty"` // Error details when scraping fails
+	ID     primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID string             `bson:"user_id" json:"user_id"`
+	// Source is how the product entered the system:
+	//   "link"        — legacy server-side scrape of URL (clients <= 2.3.4)
+	//   "user_upload" — images picked from the phone's gallery/camera
+	//   "link_import" — images the user picked in the in-app browser on
+	//                   their own device and uploaded; URL is the page they
+	//                   imported from. The server never fetched anything.
+	Source      string `bson:"source" json:"source"`
+	URL         string `bson:"url" json:"url"` // Product page URL (empty for user_upload)
+	ResolvedURL string `bson:"resolved_url,omitempty" json:"resolved_url,omitempty"`
+	Status      string `bson:"status" json:"status"`                                 // "success", "failed"
+	ScrapeError string `bson:"scrape_error,omitempty" json:"scrape_error,omitempty"` // Error details when scraping fails
 
 	// FailureReason is the stable code the app branches on
 	// (invalid_url | unsupported_site | scrape_failed) — the same value sent
@@ -40,6 +46,14 @@ type Product struct {
 	// Flow is "app" or "guest". A guest failure is a lost first impression
 	// and is worth weighting differently.
 	Flow string `bson:"flow,omitempty" json:"-"`
+
+	// ImportMethod (link_import only) is how the client obtained the images:
+	// dom_pick | tap | in_page_fetch | screenshot | mixed. Analytics only.
+	ImportMethod string `bson:"import_method,omitempty" json:"-"`
+	// PageHost (link_import only) is the lower-cased host of URL, stored
+	// separately so "which stores do people import from" is a group-by, not
+	// a URL parse at query time.
+	PageHost string `bson:"page_host,omitempty" json:"-"`
 
 	CreatedAt        time.Time `bson:"created_at" json:"created_at"`
 	Title            string    `json:"title" bson:"title"`

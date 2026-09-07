@@ -181,7 +181,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, X-Request-ID, Cache-Control, Pragma")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, X-Request-ID, Cache-Control, Pragma, X-App-Version, X-Platform")
 		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 
 		if r.Method == http.MethodOptions {
@@ -257,11 +257,24 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/rewards/referral/redeem", guard(post, api.AuthMiddleware(http.HandlerFunc(api.RedeemReferralHandler))))
 	mux.Handle("/rewards/review", guard(post, api.AuthMiddleware(http.HandlerFunc(api.ReviewRewardHandler))))
 
+	// Remote switchboard for the client (Link Import mode, limits, blocked
+	// hosts). Unauthenticated: nothing secret, and the guest flow reads it
+	// before any login exists.
+	mux.Handle("/app/config", guard(get, http.HandlerFunc(api.AppConfigHandler)))
+
+	// Tutorials: the YouTube channel's uploads, via its public feed. Public.
+	mux.Handle("/tutorials", guard(get, http.HandlerFunc(api.TutorialsHandler)))
+
 	// Legal.
 	mux.Handle("/legal/privacy-policy", guard(get, http.HandlerFunc(api.GetPrivacyPolicy)))
 	mux.Handle("/legal/terms-of-service", guard(get, http.HandlerFunc(api.GetTermsOfService)))
 
 	// Product.
+	//
+	// /product/details is the LEGACY server-side scrape, kept for clients
+	// <= 2.3.4 and gated by SERVER_SCRAPE_MODE (see api.serverScrapeGate).
+	// Clients >= 2.4.0 import from links on the device and only ever call
+	// /product/upload. See fitly-app/docs/USER_SIDE_LINK_IMPORT_PLAN.md.
 	mux.Handle("/product/details", guard(post, api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.ScrapeHandler)), true)))
 	mux.Handle("/product/upload", guard(post, api.ImageCacheMiddleware(api.AuthMiddleware(http.HandlerFunc(api.UploadProductHandler)), true)))
 
