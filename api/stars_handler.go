@@ -321,6 +321,13 @@ func PlayRTDNHandler(w http.ResponseWriter, r *http.Request) {
 			// balance to credit, and guessing is not an option.
 			userID, ok := utils.UserForPurchaseToken(ctx, n.PurchaseToken)
 			if !ok {
+				// No record: the app died between the payment sheet and the
+				// submit, or was reinstalled while the payment settled. The
+				// buyer's id is stamped on the purchase itself, so ask Google
+				// who bought it rather than dropping a payment we took.
+				userID, ok = utils.UserForObfuscatedAccount(ctx, n.SKU, n.PurchaseToken)
+			}
+			if !ok {
 				log.Warn("rtdn purchase for an unknown token — cannot attribute",
 					"sku", n.SKU)
 				break

@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/config"
 	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils/alert"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/api/androidpublisher/v3"
@@ -389,4 +391,43 @@ func UserForPurchaseToken(ctx context.Context, token string) (string, bool) {
 		return "", false
 	}
 	return p.UserID, true
+}
+
+// UserForObfuscatedAccount attributes a purchase we hold no record of.
+//
+// The app stamps the buyer's id onto the purchase as Play's
+// obfuscatedAccountId, and Google hands it back on the purchase itself. That
+// is the only way to credit a payment whose token never reached us — the app
+// was killed between the payment sheet and the submit, or reinstalled while a
+// UPI payment was still settling. Without this the money is taken and the
+// notification arrives with nobody to credit.
+//
+// Google's word is not taken on trust: the id must parse and name a user we
+// actually hold, so a malformed or stale value fails closed rather than
+// crediting the wrong balance.
+func UserForObfuscatedAccount(ctx context.Context, productID, token string) (string, bool) {
+	purchase, err := VerifyPurchase(ctx, productID, token)
+	if err != nil || purchase == nil {
+		return "", false
+	}
+
+	id := strings.TrimSpace(purchase.ObfuscatedExternalAccountId)
+	if id == "" {
+		return "", false
+	}
+
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return "", false
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	err = GetCollection(config.DBName, "users").
+		FindOne(lookupCtx, bson.M{"_id": oid}).Err()
+	if err != nil {
+		return "", false
+	}
+	return id, true
 }
