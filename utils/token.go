@@ -8,6 +8,16 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// sessionTTL is how long a signed-in session lasts.
+//
+// Thirty days, matching the guest token, because there is no refresh flow: the
+// app's 401 interceptor purges the session and routes to login, so the token
+// lifetime *is* the logout interval. At the previous 24 hours that meant every
+// user was signed out once a day, which production showed for what it is —
+// two 401s on /billing/status, a password-reset OTP three minutes later, and a
+// fresh login. People do not remember a password they are asked for daily.
+const sessionTTL = 30 * 24 * time.Hour
+
 // GenerateToken generates a JWT token for the user
 func GenerateToken(userID string) (string, error) {
 	jwtSecret := []byte(os.Getenv("JWT_SECRET"))
@@ -17,7 +27,7 @@ func GenerateToken(userID string) (string, error) {
 
 	claims := jwt.MapClaims{
 		"user_id": userID,
-		"exp":     time.Now().Add(time.Hour * 24).Unix(), // Token valid for 24 hours
+		"exp":     time.Now().Add(sessionTTL).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -37,7 +47,7 @@ func GenerateGuestToken(userID string) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"guest":   true,
-		"exp":     time.Now().Add(time.Hour * 24 * 30).Unix(),
+		"exp":     time.Now().Add(sessionTTL).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

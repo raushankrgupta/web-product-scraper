@@ -96,9 +96,8 @@ func KeysFromPresigned(urls []string) []string {
 		if u == "" {
 			continue
 		}
-		if i := strings.Index(u, "amazonaws.com/"); i >= 0 {
-			key := u[i+len("amazonaws.com/"):]
-			out = append(out, strings.SplitN(key, "?", 2)[0])
+		if strings.Contains(u, "amazonaws.com/") {
+			out = append(out, S3KeyFromURL(u))
 			continue
 		}
 		out = append(out, strings.SplitN(u, "?", 2)[0])

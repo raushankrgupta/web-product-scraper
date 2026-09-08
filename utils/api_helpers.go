@@ -127,9 +127,7 @@ func PresignImageURLs(ctx context.Context, images []string) []string {
 			continue
 		}
 		if strings.Contains(img, "amazonaws.com/") {
-			parts := strings.SplitN(img, "amazonaws.com/", 2)
-			if len(parts) == 2 {
-				key := strings.SplitN(parts[1], "?", 2)[0]
+			if key := S3KeyFromURL(img); key != img {
 				if presigned, err := GetPresignedURL(ctx, key); err == nil {
 					presignedURLs = append(presignedURLs, presigned)
 					continue
@@ -139,7 +137,7 @@ func PresignImageURLs(ctx context.Context, images []string) []string {
 		} else if strings.HasPrefix(img, "http") {
 			presignedURLs = append(presignedURLs, img)
 		} else {
-			if url, err := GetPresignedURL(ctx, img); err == nil {
+			if url, err := GetPresignedURL(ctx, NormaliseS3Key(img)); err == nil {
 				presignedURLs = append(presignedURLs, url)
 			} else {
 				presignedURLs = append(presignedURLs, img)

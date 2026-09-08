@@ -69,12 +69,16 @@ func UploadImagesToS3(ctx context.Context, urls []string, folderPrefix string) (
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			// Generate S3 Key
-			filename := filepath.Base(url)
-			if strings.Contains(filename, "?") {
-				filename = strings.Split(filename, "?")[0]
-			}
-			if filename == "" || len(filename) > 255 {
+			// Generate S3 Key.
+			//
+			// The filename comes off a retailer CDN URL, where `+`, spaces and
+			// percent-escapes are ordinary — Amazon's image ids routinely
+			// contain `+`. Any of those in an object key means one thing as a
+			// key and another in a URL path, and the key survives in the
+			// database long after the URL that produced it, so it is sanitised
+			// to an unambiguous character set once, here.
+			filename := SafeS3Filename(filepath.Base(stripQuery(url)))
+			if !hasAlphanumeric(filename) || len(filename) > 255 {
 				filename = fmt.Sprintf("image_%d.jpg", i)
 			}
 			// ensure unique names
@@ -100,6 +104,28 @@ func UploadImagesToS3(ctx context.Context, urls []string, folderPrefix string) (
 
 	wg.Wait()
 	return urlToKey, nil
+}
+
+// hasAlphanumeric reports whether a sanitised filename still says anything.
+// Sanitising a URL that ends in a slash or is all punctuation leaves a run of
+// underscores, which is a valid key but a useless one — those get a generated
+// name instead.
+func hasAlphanumeric(s string) bool {
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return true
+		}
+	}
+	return false
+}
+
+// stripQuery drops a URL's query and fragment so neither leaks into the
+// filename we derive from its path.
+func stripQuery(url string) string {
+	if i := strings.IndexAny(url, "?#"); i >= 0 {
+		return url[:i]
+	}
+	return url
 }
 
 func downloadAndUpload(ctx context.Context, url, objectKey string) error {

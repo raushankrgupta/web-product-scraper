@@ -143,15 +143,15 @@ func getWardrobe(w http.ResponseWriter, r *http.Request) {
 	for i := range items {
 		for j, img := range items[i].Images {
 			if strings.Contains(img, "amazonaws.com/") {
-				parts := strings.SplitN(img, "amazonaws.com/", 2)
-				if len(parts) == 2 {
-					key := strings.SplitN(parts[1], "?", 2)[0]
+				if key := utils.S3KeyFromURL(img); key != img {
 					if presigned, err := utils.GetPresignedURL(ctx, key); err == nil {
 						items[i].Images[j] = presigned
 					}
 				}
 			} else if img != "" && !strings.HasPrefix(img, "http") {
-				presigned, err := utils.GetPresignedURL(ctx, img)
+				// NormaliseS3Key repairs rows saved before the key extraction
+				// stopped handing back a percent-encoded path.
+				presigned, err := utils.GetPresignedURL(ctx, utils.NormaliseS3Key(img))
 				if err == nil {
 					items[i].Images[j] = presigned
 				}
@@ -180,20 +180,13 @@ func getWardrobe(w http.ResponseWriter, r *http.Request) {
 }
 
 // extractS3Key strips a presigned S3 URL down to just the object key.
-// If the URL contains "amazonaws.com/", it extracts the path after that and
-// removes any query parameters (presign tokens). Non-S3 URLs are returned as-is.
+//
+// This is what gets persisted on a wardrobe item, so getting the encoding
+// wrong here is not a display glitch — it writes a key that will never resolve
+// into the database permanently. See utils.S3KeyFromURL for why the path has
+// to be percent-decoded rather than sliced off the string.
 func extractS3Key(img string) string {
-	if strings.Contains(img, "amazonaws.com/") {
-		parts := strings.SplitN(img, "amazonaws.com/", 2)
-		if len(parts) == 2 {
-			// Strip query parameters (presign tokens)
-			key := strings.SplitN(parts[1], "?", 2)[0]
-			if key != "" {
-				return key
-			}
-		}
-	}
-	return img
+	return utils.S3KeyFromURL(img)
 }
 
 // saveProduct handles saving a product to the wardrobe
