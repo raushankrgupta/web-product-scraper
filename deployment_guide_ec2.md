@@ -201,3 +201,13 @@ To enable auto-deployment whenever you push to GitHub:
     *   `EC2_SSH_KEY`: Open your `.pem` key file, copy **everything** (including `-----BEGIN RSA PRIVATE KEY-----`), and paste it here.
 4.  Push a change to the `master` branch. You can watch the "Actions" tab in GitHub to see it deploy automatically!
 
+
+
+# Save logs on server in a file on server
+docker compose logs -f > server_logs.txt
+
+
+# Save the file from server to local file
+scp -i tryonfusion-ec2-key.pem ubuntu@3.6.23.203:/home/ubuntu/web-product-scraper/server_logs.txt .
+
+
