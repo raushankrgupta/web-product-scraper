@@ -36,6 +36,17 @@ type TryOn struct {
 	// beach?" is only answerable if the note that asked for one was kept.
 	SpecialRequest string `bson:"special_request,omitempty" json:"special_request,omitempty"`
 
+	// Trend fields, set only on a Type == "trend" document.
+	//
+	// A trend generation writes one of these alongside its TrendRun so the
+	// result lands in the user's gallery like anything else — favourite, save,
+	// share and delete all work with no branch anywhere. All three are
+	// omitempty and nothing reads them on a try-on, so this needed no
+	// migration of the existing collection.
+	TrendID    string `bson:"trend_id,omitempty" json:"trend_id,omitempty"`
+	TrendSlug  string `bson:"trend_slug,omitempty" json:"trend_slug,omitempty"`
+	TrendTitle string `bson:"trend_title,omitempty" json:"trend_title,omitempty"`
+
 	GeneratedImageURL string    `bson:"generated_image_url" json:"generated_image_url"`
 	Status            string    `bson:"status" json:"status"`
 	CreatedAt         time.Time `bson:"created_at" json:"created_at"`

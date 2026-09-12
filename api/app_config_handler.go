@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/config"
+	"github.com/raushankrgupta/web-product-scraper/models"
 	"github.com/raushankrgupta/web-product-scraper/utils"
 )
 
@@ -28,6 +29,12 @@ type AppConfigResponse struct {
 
 	LinkImport   LinkImportConfig   `json:"link_import"`
 	ServerScrape ServerScrapeConfig `json:"server_scrape"`
+
+	// AppUpdate drives the in-app "Update Available" sheet. Unlike everything
+	// above it, this one is admin-editable and comes from Mongo — see
+	// loadAppUpdateSettings for why, and for the rule that every failure path
+	// resolves to mode "off".
+	AppUpdate models.AppUpdateSettings `json:"app_update"`
 }
 
 // LinkImportConfig is what a >= 2.4.0 client needs to run the in-app browser
@@ -67,7 +74,7 @@ var appConfigGeneratedAt = time.Now()
 // wrong for this one. The config is identical for everyone and is fetched on
 // every cold start, so it should be publicly cacheable for a short window.
 func AppConfigHandler(w http.ResponseWriter, r *http.Request) {
-	data, err := json.Marshal(buildAppConfig(appConfigGeneratedAt))
+	data, err := json.Marshal(buildAppConfig(appConfigGeneratedAt, loadAppUpdateSettings(r.Context())))
 	if err != nil {
 		utils.RespondError(w, nil, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -85,16 +92,20 @@ func AppConfigHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("\n"))
 }
 
-// buildAppConfig assembles the response from config. Split out so tests can
-// pin the shape without an HTTP round trip.
-func buildAppConfig(now time.Time) AppConfigResponse {
+// buildAppConfig assembles the response from config plus the admin-editable
+// update settings. Split out so tests can pin the shape without an HTTP round
+// trip or a database.
+func buildAppConfig(now time.Time, update models.AppUpdateSettings) AppConfigResponse {
 	blocked := config.LinkImportBlockedHosts
 	if blocked == nil {
 		// An explicit empty array, not null: the client iterates it.
 		blocked = []string{}
 	}
 	return AppConfigResponse{
-		Schema:        1,
+		// 2 adds app_update. Additive, so an old client that ignores it is
+		// unaffected; the bump is for the admin panel's benefit, not the
+		// client's.
+		Schema:        2,
 		GeneratedAt:   now.UTC().Truncate(time.Second),
 		MinAppVersion: config.MinAppVersion,
 		LinkImport: LinkImportConfig{
@@ -111,5 +122,6 @@ func buildAppConfig(now time.Time) AppConfigResponse {
 			Mode:   config.ServerScrapeMode,
 			Sunset: config.ServerScrapeSunset,
 		},
+		AppUpdate: update,
 	}
 }

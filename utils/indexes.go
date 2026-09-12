@@ -135,6 +135,61 @@ func EnsureIndexes(ctx context.Context, dbName string) {
 			Keys: bson.D{{Key: "reason", Value: 1}, {Key: "created_at", Value: -1}},
 		}},
 
+		// --- Trends ---
+		//
+		// The home screen lists active trends in display order, which is the
+		// one query on a request path here.
+		{models.CollTrends, mongo.IndexModel{
+			Keys: bson.D{{Key: "status", Value: 1}, {Key: "sort_order", Value: 1}},
+		}},
+		// The slug is the stable handle used in S3 paths and analytics, so
+		// two trends must never share one. Partial because a half-written
+		// draft may not have been given a slug yet, and a plain unique index
+		// would collapse every such draft onto a single empty key.
+		//
+		// `$gt: ""` rather than `$ne: ""`: partial indexes reject $ne (and
+		// $not) outright, which failed this index at boot. Mongo's type
+		// bracketing means $gt against a string only matches strings, so
+		// this selects exactly "a non-empty string slug".
+		{models.CollTrends, mongo.IndexModel{
+			Keys: bson.D{{Key: "slug", Value: 1}},
+			Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+				bson.M{"slug": bson.M{"$gt": ""}}),
+		}},
+		// Runs are read three ways in admin, all newest-first: by trend
+		// ("how is this one doing"), by user ("this person says it failed"),
+		// and by status ("what has been failing lately").
+		{models.CollTrendRuns, mongo.IndexModel{
+			Keys: bson.D{{Key: "trend_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		{models.CollTrendRuns, mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		{models.CollTrendRuns, mongo.IndexModel{
+			Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// TTL on staged photos. A generation that uses an upload unsets its
+		// expires_at, which promotes it from "staged" to "evidence" — Mongo
+		// only expires documents that still carry the field, so a run record
+		// never ends up pointing at an image that has been reclaimed.
+		{models.CollTrendUploads, mongo.IndexModel{
+			Keys:    bson.D{{Key: "expires_at", Value: 1}},
+			Options: options.Index().SetExpireAfterSeconds(0),
+		}},
+		// Every upload lookup is scoped to its owner — an id alone must never
+		// resolve someone else's photo.
+		{models.CollTrendUploads, mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}},
+		}},
+		// The gallery already indexes (user_id, created_at); this covers the
+		// admin question that one cannot answer cheaply: everything produced
+		// by a given trend.
+		{"tryons", mongo.IndexModel{
+			Keys: bson.D{{Key: "trend_id", Value: 1}, {Key: "created_at", Value: -1}},
+			Options: options.Index().SetPartialFilterExpression(
+				bson.M{"trend_id": bson.M{"$exists": true}}),
+		}},
+
 		// --- Custom backgrounds ---
 		//
 		// The theme picker lists one user's uploads newest first, and the

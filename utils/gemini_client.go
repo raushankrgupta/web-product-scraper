@@ -517,6 +517,10 @@ func FailureReason(err error) string {
 	var oe *openAIError
 	if errors.As(err, &oe) {
 		switch {
+		// Before the 400/"image" case below: a bad id like gpt-image-x is a
+		// 400 whose message also contains "image".
+		case isUnknownModel(oe.Code + " " + oe.Message):
+			return "misconfigured"
 		case oe.isModerationBlock():
 			return "prohibited_content"
 		case IsQuotaError(oe):
@@ -541,7 +545,10 @@ func FailureReason(err error) string {
 		return "text_instead_of_image"
 	case strings.Contains(s, "not enough images"):
 		return "insufficient_input_images"
-	case strings.Contains(s, "gemini_api_key is not set"):
+	case strings.Contains(s, "gemini_api_key is not set"),
+		strings.Contains(s, "openai_api_key is not set"),
+		strings.HasPrefix(s, "misconfigured"),
+		isUnknownModel(s):
 		return "misconfigured"
 	case isSafetyBlock(err):
 		return "blocked_other"
@@ -915,4 +922,26 @@ func geminiGenerate(ctx context.Context, r *resolvedTryOn, quality string) ([]by
 		GeminiBreaker.RecordSuccess()
 	}
 	return out, err
+}
+
+// isUnknownModel reports an upstream saying the model id does not exist.
+//
+// Classified as misconfigured rather than as an upstream error on purpose.
+// An upstream error triggers the fallback to the other vendor, which for a
+// mistyped model id would quietly serve a different look on a different
+// company's model — hiding the configuration mistake behind a result instead
+// of reporting it. Google says "models/x is not found"; OpenAI says
+// "model_not_found" or "Invalid value … model".
+func isUnknownModel(text string) bool {
+	t := strings.ToLower(text)
+	if strings.Contains(t, "model_not_found") {
+		return true
+	}
+	if !strings.Contains(t, "model") {
+		return false
+	}
+	return strings.Contains(t, "is not found") ||
+		strings.Contains(t, "does not exist") ||
+		strings.Contains(t, "invalid model") ||
+		(strings.Contains(t, "invalid value") && strings.Contains(t, "'model'"))
 }
