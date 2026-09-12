@@ -58,6 +58,41 @@ func planBypassesStars(plan string) bool {
 	return plan == models.PlanPlus || plan == models.PlanPro
 }
 
+// GateDecision is what a generation costs and what it is called.
+//
+// The two are separate because "what kind of generation is this" is a billing
+// label that ends up on the hold and the ledger row, while "what does it
+// cost" can come from somewhere else entirely — a trend prices itself from
+// its own document.
+type GateDecision struct {
+	// Kind is the billing label: individual | couple | group | trend.
+	Kind string
+	Cost int
+	// FreeEligible says whether the daily free allowance may cover this.
+	FreeEligible bool
+}
+
+// CostResolver decides what to charge for one request.
+//
+// It is handed the already-buffered body so a resolver can read the payload
+// without consuming it — the handler downstream still decodes the same bytes.
+type CostResolver func(r *http.Request, body []byte, quality string) (GateDecision, error)
+
+// tierCostResolver is the try-on pricing: type from the route, cost from
+// config/stars.json.
+func tierCostResolver(r *http.Request, _ []byte, quality string) (GateDecision, error) {
+	tryOnType := tryOnTypeForPath(r.URL.Path)
+	cost, ok := config.Stars.TierCost(tryOnType, quality)
+	if !ok {
+		return GateDecision{}, fmt.Errorf("%w: %s/%s", utils.ErrUnknownTier, tryOnType, quality)
+	}
+	return GateDecision{
+		Kind:         tryOnType,
+		Cost:         cost,
+		FreeEligible: config.Stars.FreeCovers(tryOnType, quality),
+	}, nil
+}
+
 // StarGateMiddleware reserves the cost of a generation before the handler
 // runs, and settles that reservation afterwards: committed on success,
 // refunded on any failure.
@@ -70,6 +105,18 @@ func planBypassesStars(plan string) bool {
 // Wrap inside AuthMiddleware and TryOnGuardMiddleware, so that duplicate
 // in-flight requests are rejected before they can take a second hold.
 func StarGateMiddleware(next http.Handler) http.Handler {
+	return StarGateMiddlewareWith(tierCostResolver, next)
+}
+
+// StarGateMiddlewareWith is StarGateMiddleware with the pricing decision
+// supplied by the caller.
+//
+// Trends need this: their cost depends on how many people the user selected
+// and how many images they asked for, which is knowable only from the body
+// and from a document in Mongo. Giving trends their own copy of this
+// middleware would have meant two places to get the refund path right, and
+// the refund path is the part that costs real money when it is wrong.
+func StarGateMiddlewareWith(resolve CostResolver, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID, err := GetUserIDFromContext(r.Context())
 		if err != nil {
@@ -78,13 +125,14 @@ func StarGateMiddleware(next http.Handler) http.Handler {
 		}
 		plan := GetUserPlanFromContext(r.Context())
 		isGuest := IsGuestFromContext(r.Context())
-		tryOnType := tryOnTypeForPath(r.URL.Path)
 
 		// Read the billing envelope, then put the body back so the handler
 		// decodes it exactly as before.
 		var env starRequestEnvelope
+		var body []byte
 		if isJSONRequest(r) {
-			body, readErr := io.ReadAll(io.LimitReader(r.Body, maxJSONBody))
+			var readErr error
+			body, readErr = io.ReadAll(io.LimitReader(r.Body, maxJSONBody))
 			r.Body.Close()
 			if readErr != nil {
 				utils.RespondJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
@@ -123,9 +171,25 @@ func StarGateMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		res, err := utils.ReserveGeneration(r.Context(), userID, tryOnType, quality, env.IdempotencyKey, isGuest)
+		decision, err := resolve(r, body, quality)
 		if err != nil {
-			respondReserveError(w, r, err, userID, tryOnType, quality, isGuest)
+			// Resolution runs before any hold is taken, so there is nothing
+			// to refund here — which is the reason it runs before, and not
+			// inside, the reservation.
+			//
+			// These are "you asked for something that isn't on offer"
+			// verdicts, not machine failures, so they answer 400/404 with the
+			// resolver's own sentence. Routing them through
+			// respondReserveError would turn every mis-filled form into an
+			// opaque 500.
+			respondResolveError(w, r, err, decision.Kind)
+			return
+		}
+
+		res, err := utils.ReserveGenerationCost(r.Context(), userID, decision.Kind, quality,
+			env.IdempotencyKey, decision.Cost, decision.FreeEligible, isGuest)
+		if err != nil {
+			respondReserveError(w, r, err, userID, decision.Kind, quality, decision.Cost, isGuest)
 			return
 		}
 
@@ -169,12 +233,40 @@ func settle(r *http.Request, userID string, res utils.Reservation, rec *statusRe
 	}
 }
 
+// respondResolveError answers a pricing-resolution failure.
+//
+// The message comes from the resolver because only the resolver knows what
+// was wrong — "pick at most 2 people" is actionable, and the generic billing
+// error it used to become was not.
+func respondResolveError(w http.ResponseWriter, r *http.Request, err error, kind string) {
+	if errors.Is(err, utils.ErrUnknownTier) {
+		recordGateRejection(r, "unknown_tier", http.StatusBadRequest, err.Error())
+		utils.RespondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "That combination is not available.",
+		})
+		return
+	}
+	if errors.Is(err, errTrendUnavailable) {
+		recordGateRejection(r, "trend_unavailable", http.StatusNotFound, err.Error())
+		utils.RespondJSON(w, http.StatusNotFound, map[string]interface{}{
+			"error":  "That trend is no longer available.",
+			"reason": "trend_unavailable",
+		})
+		return
+	}
+	recordGateRejection(r, "invalid_request", http.StatusBadRequest, err.Error())
+	utils.RespondJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"error": err.Error(),
+		"kind":  kind,
+	})
+}
+
 // respondReserveError turns a reservation failure into a response the app can
 // act on. 402 carries the exact shortfall and the catalogue, so the store
 // sheet can open with the right pack already selected instead of making the
 // user work out what to buy.
 func respondReserveError(w http.ResponseWriter, r *http.Request, err error,
-	userID, tryOnType, quality string, isGuest bool) {
+	userID, tryOnType, quality string, cost int, isGuest bool) {
 
 	if errors.Is(err, utils.ErrUnknownTier) {
 		recordGateRejection(r, "unknown_tier", http.StatusBadRequest, err.Error())
@@ -190,8 +282,6 @@ func respondReserveError(w http.ResponseWriter, r *http.Request, err error,
 			"We couldn't start that try-on. Please try again.", err, http.StatusInternalServerError)
 		return
 	}
-
-	cost, _ := config.Stars.TierCost(tryOnType, quality)
 
 	summary, sumErr := utils.GetStarSummary(r.Context(), userID, isGuest)
 	balance := 0
@@ -216,7 +306,7 @@ func respondReserveError(w http.ResponseWriter, r *http.Request, err error,
 	recordGateRejection(r, "insufficient_stars", http.StatusPaymentRequired,
 		fmt.Sprintf("cost=%d balance=%d", cost, balance))
 	utils.RespondJSON(w, http.StatusPaymentRequired, map[string]interface{}{
-		"error":    "You don't have enough stars for this try-on.",
+		"error":    insufficientStarsMessage(tryOnType),
 		"reason":   "insufficient_stars",
 		"required": cost,
 		"balance":  balance,
@@ -248,4 +338,14 @@ func GetQualityFromContext(ctx context.Context) string {
 		return config.Stars.DefaultQuality
 	}
 	return q
+}
+
+// insufficientStarsMessage names the thing the user was actually trying to do.
+// "You don't have enough stars for this try-on" is wrong on a trend screen,
+// and wrong in the one place a user is already frustrated.
+func insufficientStarsMessage(kind string) string {
+	if kind == "trend" {
+		return "You don't have enough stars for this look."
+	}
+	return "You don't have enough stars for this try-on."
 }

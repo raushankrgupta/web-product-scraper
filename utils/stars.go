@@ -328,6 +328,32 @@ func ReserveGeneration(ctx context.Context, userID, tryOnType, quality, idempote
 		return Reservation{}, fmt.Errorf("%w: %s/%s", ErrUnknownTier, tryOnType, quality)
 	}
 
+	return ReserveGenerationCost(ctx, userID, tryOnType, quality, idempotencyKey,
+		cost, cfg.FreeCovers(tryOnType, quality), isGuest)
+}
+
+// ReserveGenerationCost is ReserveGeneration for a generation whose price is
+// not one of the fixed try-on tiers.
+//
+// Trends price themselves: the cost depends on how many people the user
+// picked and how many images they asked for, and the formula lives on the
+// trend document rather than in config/stars.json. Everything else about the
+// reservation is identical and must stay identical — same funding order, same
+// single conditional update, same idempotency — which is why this is the same
+// function with the price passed in rather than a second implementation.
+//
+// freeAllowed says whether free entitlements may cover this generation at all.
+// For a try-on that is cfg.FreeCovers(type, quality); for a trend it is the
+// trend's own FreeEligible flag, which defaults to false.
+func ReserveGenerationCost(ctx context.Context, userID, tryOnType, quality, idempotencyKey string,
+	cost int, freeAllowed, isGuest bool) (Reservation, error) {
+
+	cfg := config.Stars
+
+	if cost < 0 {
+		return Reservation{}, fmt.Errorf("%w: negative cost %d", ErrUnknownTier, cost)
+	}
+
 	b, err := GetOrCreateBalance(ctx, userID)
 	if err != nil {
 		return Reservation{}, err
@@ -350,7 +376,7 @@ func ReserveGeneration(ctx context.Context, userID, tryOnType, quality, idempote
 		}
 	}
 
-	freeEligible := cfg.FreeCovers(tryOnType, quality) && !freeSuppressed(b)
+	freeEligible := freeAllowed && !freeSuppressed(b)
 
 	if freeEligible {
 		dailyLimit := cfg.Free.DailyFreeCount

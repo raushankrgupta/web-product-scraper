@@ -265,6 +265,28 @@ func registerRoutes(mux *http.ServeMux) {
 	// Tutorials: the YouTube channel's uploads, via its public feed. Public.
 	mux.Handle("/tutorials", guard(get, http.HandlerFunc(api.TutorialsHandler)))
 
+	// Trends: the admin-authored AI looks on the home screen.
+	//
+	// The listing is unauthenticated for the same reason /app/config is —
+	// it is identical for every user, carries nothing private, and is fetched
+	// on cold start, so it should be publicly cacheable. The prompts, which
+	// are the only part worth protecting, are stripped server-side and never
+	// appear in the response at all.
+	mux.Handle("/trends", guard(get, http.HandlerFunc(api.TrendsHandler)))
+	mux.Handle("/trends/", guard(get, http.HandlerFunc(api.TrendsHandler)))
+
+	// Staging a photo for a trend. Authenticated, guests refused, and
+	// deliberately separate from the generation call: keeping the generate
+	// body JSON is what lets it keep the body-fingerprint idempotency the
+	// billing layer relies on, and a flaky upload then cannot cost a star
+	// hold. Registered before /trends/ above would shadow it — ServeMux
+	// prefers the longer pattern, so the explicit path wins.
+	mux.Handle("/trends/uploads", guard(post, api.TrendUploadRoute()))
+
+	// Trend generation. Same middleware sandwich as the try-on routes, for
+	// the same reasons; see the comment on those.
+	mux.Handle("/trends/generate", guard(post, api.TrendGenerateRoute()))
+
 	// Legal.
 	mux.Handle("/legal/privacy-policy", guard(get, http.HandlerFunc(api.GetPrivacyPolicy)))
 	mux.Handle("/legal/terms-of-service", guard(get, http.HandlerFunc(api.GetTermsOfService)))
@@ -350,6 +372,17 @@ func registerRoutes(mux *http.ServeMux) {
 	if !config.IsProd() && config.EnableDevRoutes {
 		mux.Handle("/internal/alert-test", guard(post, http.HandlerFunc(api.AlertTestHandler)))
 		mux.Handle("/internal/stars", guard(post, http.HandlerFunc(api.DevStarsHandler)))
+	}
+
+	// Trend preview, called by the admin backend to test-generate a prompt.
+	//
+	// Unlike the dev routes above this one is NOT gated on the environment,
+	// because there is one backend and prompts have to be authored against
+	// it. Its guard is ADMIN_INTERNAL_TOKEN alone: unset, and the handler
+	// answers 404, so a deployment that never configures it is not running an
+	// unguarded endpoint that spends money per call.
+	if config.AdminInternalToken != "" {
+		mux.Handle("/internal/trends/preview", guard(post, http.HandlerFunc(api.TrendPreviewHandler)))
 	}
 }
 

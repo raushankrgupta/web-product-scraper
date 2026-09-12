@@ -54,6 +54,17 @@ var (
 	// InternalAPISecret is sent to server B in the X-Internal-Secret header so
 	// B can verify the request came from this server. Must match B's value.
 	InternalAPISecret string
+
+	// AdminInternalToken guards the trend preview endpoint, which the admin
+	// backend calls to test-generate a prompt before it is published.
+	//
+	// Deliberately its own secret rather than a second use of
+	// InternalAPISecret: that one is shared with the scrape offload host, and
+	// this one gates an endpoint that spends money on a paid image model with
+	// every request. They have different blast radii, so they rotate
+	// separately. Empty disables the endpoint outright — it answers 404, so a
+	// deployment that never sets it is not running an unguarded money drain.
+	AdminInternalToken string
 	// ServerBEnabled is the master switch for the offload path. When false,
 	// every scrape runs locally on this server, B is never contacted, and the
 	// background health probe stops reporting it as a failed dependency.
@@ -294,6 +305,9 @@ func LoadConfig() {
 	// existing deployments keep scraping locally until B is configured.
 	ServerBScrapeURL = strings.TrimSpace(os.Getenv("SERVER_B_SCRAPE_URL"))
 	InternalAPISecret = os.Getenv("INTERNAL_API_SECRET")
+
+	// Trend preview. Unset means the endpoint does not exist.
+	AdminInternalToken = strings.TrimSpace(os.Getenv("ADMIN_INTERNAL_TOKEN"))
 
 	// Default preserves the previous behaviour exactly: on when a URL is
 	// configured, off when it is not. An explicitly enabled B with no URL is
