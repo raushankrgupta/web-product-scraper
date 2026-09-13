@@ -355,7 +355,7 @@ func submitTryonFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req TryonFeedbackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBody)).Decode(&req); err != nil {
 		utils.RespondError(w, &logMessageBuilder, "Invalid request body", http.StatusBadRequest)
 		return
 	}

@@ -485,6 +485,13 @@ func FailureReason(err error) string {
 		return ""
 	}
 
+	// Checked before the vendor-specific classifiers: an echo is detected by
+	// us after a provider reported success, so it carries none of their
+	// error shapes.
+	if errors.Is(err, ErrInputEcho) {
+		return "input_echo"
+	}
+
 	// Decoded finish reasons are the highest-fidelity signal we get: the
 	// model told us exactly which policy it applied.
 	var be *blockError

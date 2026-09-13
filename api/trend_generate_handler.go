@@ -235,8 +235,9 @@ func storeTrendOutputs(ctx context.Context, userID string, trend models.Trend,
 	collection := utils.GetCollection(config.DBName, "tryons")
 
 	for i, data := range images {
-		objectKey := fmt.Sprintf("generated_trends/%s/%d-%d.jpg", trend.Slug, time.Now().UnixNano(), i)
-		if _, err := utils.UploadFileToS3(ctx, bytes.NewReader(data), objectKey, "image/jpeg"); err != nil {
+		ext, mime := utils.GeneratedImageName(data)
+		objectKey := fmt.Sprintf("generated_trends/%s/%d-%d%s", trend.Slug, time.Now().UnixNano(), i, ext)
+		if _, err := utils.UploadFileToS3(ctx, bytes.NewReader(data), objectKey, mime); err != nil {
 			utils.L(ctx).Error("trend output upload failed",
 				"trend", trend.Slug, "index", i, "error", err.Error())
 			continue

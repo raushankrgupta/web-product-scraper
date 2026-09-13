@@ -119,7 +119,7 @@ func forwardScrapeToServerB(w http.ResponseWriter, r *http.Request, logger *stri
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		utils.AddToLogMessage(logger, fmt.Sprintf("Failed reading server B response: %v", err))
 		alert.Errorf("serverb", "unreadable response", err)
@@ -163,7 +163,7 @@ func scrapeViaServerB(ctx context.Context, userID, productURL string, persist bo
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return nil, err
 	}

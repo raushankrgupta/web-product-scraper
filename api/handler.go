@@ -84,11 +84,11 @@ func ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	// Support both Query Params and JSON Body
 	productURL := r.URL.Query().Get("url")
 	if productURL == "" {
-		// Try JSON body
+		// Try JSON body bounded by maxJSONBody to prevent memory exhaustion
 		var req struct {
 			URL string `json:"url"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBody)).Decode(&req); err == nil {
 			productURL = req.URL
 		}
 	}

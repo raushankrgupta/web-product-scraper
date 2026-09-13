@@ -98,6 +98,40 @@ func TestFreeCoversOnlyTheFreeTier(t *testing.T) {
 	}
 }
 
+func TestFreeCoversGuestAllowsTheFirstRunUpgrade(t *testing.T) {
+	s := loadForTest(t)
+	if s.Free.GuestFirstQuality == "" {
+		t.Skip("guest first-run upgrade is disabled in the embedded config")
+	}
+
+	if !s.FreeCoversGuest("individual", s.Free.GuestFirstQuality) {
+		t.Errorf("a guest's first run at %q must be covered by the free allowance — "+
+			"otherwise it falls through to the paid path, which a guest can never satisfy",
+			s.Free.GuestFirstQuality)
+	}
+	if !s.FreeCoversGuest("individual", s.Free.FreeQuality) {
+		t.Error("the ordinary free quality must stay covered for guests")
+	}
+	// The upgrade is per try-on type like every other free entitlement.
+	if s.FreeCoversGuest("group", s.Free.GuestFirstQuality) {
+		t.Error("group try-ons must never be free, upgrade or not")
+	}
+}
+
+// The upgrade must not leak into the signed-in path: FreeCovers governs real
+// users, and approving Pro there would give away the tier that is sold.
+func TestGuestUpgradeDoesNotMakeProFreeForEveryone(t *testing.T) {
+	s := loadForTest(t)
+	if s.Free.GuestFirstQuality == "" {
+		t.Skip("guest first-run upgrade is disabled in the embedded config")
+	}
+
+	if s.FreeCovers("individual", s.Free.GuestFirstQuality) {
+		t.Errorf("FreeCovers approved %q — the guest upgrade has leaked into the "+
+			"signed-in path and Pro is now free for everyone", s.Free.GuestFirstQuality)
+	}
+}
+
 func TestMinStarValueUsesTheCheapestRate(t *testing.T) {
 	s := loadForTest(t)
 
@@ -195,6 +229,9 @@ func TestValidationRejectsDangerousConfigs(t *testing.T) {
 		}},
 		{"free-tier quality that is not a model", func(m map[string]interface{}) {
 			m["free"].(map[string]interface{})["free_quality"] = "ghost"
+		}},
+		{"guest first-run quality that is not a model", func(m map[string]interface{}) {
+			m["free"].(map[string]interface{})["guest_first_quality"] = "ghost"
 		}},
 		{"default quality that is not a model", func(m map[string]interface{}) {
 			m["default_quality"] = "ghost"

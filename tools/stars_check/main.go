@@ -67,6 +67,15 @@ func main() {
 	fmt.Printf("free usage is suppressed at a balance of %d stars or more (cheapest tier)\n",
 		s.CheapestTierStars())
 
+	// The guest upgrade is the one free generation that does not run at
+	// free_quality, so the line above would otherwise understate what a new
+	// device costs us.
+	if q := s.Free.GuestFirstQuality; q != "" {
+		fmt.Printf("guest first-run upgrade: %d/day at %s quality, then %s — "+
+			"costs the %s rate once per device\n",
+			s.Free.GuestDailyFreeCount, q, s.Free.FreeQuality, q)
+	}
+
 	if thin > 0 {
 		fmt.Printf("\n%d tier(s) are thin: above the hard floor but below the %.2fx target.\n"+
 			"Not a blocker — but they are the first to break if model costs rise.\n",

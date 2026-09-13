@@ -84,7 +84,8 @@ func shouldTryNextProvider(err error) bool {
 		"circuit_open",          // we have already decided that vendor is down
 		"upstream_error",        // transport-level: a different vendor is a genuinely different roll
 		"timeout",               // subject to the budget check below
-		"text_instead_of_image": // a model quirk, not a policy decision
+		"text_instead_of_image", // a model quirk, not a policy decision
+		"input_echo":            // ditto: it answered, it just answered with our own picture
 		return true
 
 	// Content refusals and our own bugs. Explicit rather than a default so
@@ -146,6 +147,19 @@ func generateTryOn(ctx context.Context, label string, scene TryOnScene, people [
 			Model:      model,
 			DurationMS: took.Milliseconds(),
 		}
+		// A provider that hands back one of its own inputs has not done the
+		// try-on, but it reports success like any other generation. Catching
+		// it here rather than inside one vendor's client keeps the check on
+		// the fallback path too: whichever provider echoes, the next one gets
+		// a turn.
+		if genErr == nil {
+			if echoed := resolved.echoedInput(img); echoed != "" {
+				genErr = fmt.Errorf("%w: returned the %s unchanged", ErrInputEcho, echoed)
+				slog.Warn("provider echoed an input image instead of generating",
+					"label", label, "provider", provider, "model", model, "matched", echoed)
+			}
+		}
+
 		if genErr == nil {
 			attempt.Reason = "ok"
 			attempts = append(attempts, attempt)
