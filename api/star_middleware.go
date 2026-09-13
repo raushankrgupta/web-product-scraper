@@ -160,6 +160,21 @@ func StarGateMiddlewareWith(resolve CostResolver, next http.Handler) http.Handle
 			// Guests cannot buy stars, so offering them the paid tier would
 			// be a dead end. Pin them to the free quality.
 			quality = config.Stars.Free.FreeQuality
+
+			// One exception: a guest's first-ever generation runs on the
+			// better model. It is the only try-on most of these users will
+			// ever see, and the free tier is the one that answers a
+			// tightly-cropped portrait with the customer's own photo. See
+			// StarFreeRules.GuestFirstQuality.
+			//
+			// Counted in successful generations, so a first attempt that
+			// failed does not spend the upgrade.
+			if first := config.Stars.Free.GuestFirstQuality; first != "" &&
+				!utils.HasEverGenerated(r.Context(), userID) {
+				quality = first
+				utils.L(r.Context()).Info("guest first-run quality upgrade",
+					"user_id", userID, "quality", quality)
+			}
 		}
 
 		ctx := context.WithValue(r.Context(), QualityKey, quality)

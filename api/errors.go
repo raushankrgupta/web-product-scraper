@@ -47,6 +47,15 @@ func classifyGenErr(err error) (int, string) {
 		strings.Contains(s, "image_recitation"):
 		return http.StatusUnprocessableEntity, "The AI wouldn't generate a look from this photo. Please try a different photo of the person."
 
+	// The provider answered with one of its own inputs instead of a new
+	// image (see utils.ErrInputEcho). Not a 500: nothing on our side broke
+	// and nothing was refused. In practice it means the photo was cropped too
+	// tightly for the garment to go anywhere — a head-and-shoulders portrait
+	// and a full-length dress — so the copy says that rather than sending the
+	// user back round the same loop with the same picture.
+	case strings.Contains(s, "returned an input image unchanged"):
+		return http.StatusUnprocessableEntity, "We couldn't fit this item onto that photo. Use a photo showing more of you — head to knees works best — and try again."
+
 	case strings.Contains(s, "blocked"),
 		strings.Contains(s, "no content generated"),
 		strings.Contains(s, "returned text instead of an image"),

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -275,9 +276,17 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 		// The guest funnel is also where failure capture matters most: these
 		// users leave and never come back, so the DB row is the only record
 		// that the first thing they ever tried did not work.
-		respondGenError(w, r, &logMessageBuilder, failure, err, genStart, map[int]string{
+		guestCopy := map[int]string{
 			http.StatusUnprocessableEntity: "We couldn't generate a try-on for this item. Try a clearer photo of yourself, or pick a different product.",
-		})
+		}
+		if errors.Is(err, utils.ErrInputEcho) {
+			// Let the shared copy through instead: it names the actual
+			// problem (the photo is cropped too tightly to put clothes on),
+			// which is more use to a first-time user than being told to
+			// pick a different product.
+			delete(guestCopy, http.StatusUnprocessableEntity)
+		}
+		respondGenError(w, r, &logMessageBuilder, failure, err, genStart, guestCopy)
 		return
 	}
 	utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf(
@@ -285,7 +294,8 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Upload result + return presigned URL. Don't write to the tryons
 	//    collection — guests don't have a gallery to come back to.
-	resultKey := fmt.Sprintf("generated_images/guest_%d.jpg", time.Now().UnixNano())
+	resultExt, resultMIME := utils.GeneratedImageName(generated)
+	resultKey := fmt.Sprintf("generated_images/guest_%d%s", time.Now().UnixNano(), resultExt)
 
 	// persistCtx, not r.Context(): the generation is already paid for by the
 	// time we get here, so a caller who hung up during those 20-odd seconds
@@ -293,7 +303,7 @@ func GuestTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	uploadCtx, cancelUpload := persistCtx()
 	defer cancelUpload()
 
-	if _, err := utils.UploadFileToS3(uploadCtx, bytes.NewReader(generated), resultKey, "image/jpeg"); err != nil {
+	if _, err := utils.UploadFileToS3(uploadCtx, bytes.NewReader(generated), resultKey, resultMIME); err != nil {
 		recordStoreFailure(r, failure, err, genStart, len(generated))
 		utils.RespondInternalError(w, r, &logMessageBuilder, "s3",
 			"We generated your look but couldn't save it. Please try again.", err, http.StatusInternalServerError)

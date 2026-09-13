@@ -211,8 +211,9 @@ func TrendPreviewHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	objectKey := fmt.Sprintf("trend_previews/%s/%d.jpg", trend.Slug, time.Now().UnixNano())
-	if _, err := utils.UploadFileToS3(persistCtx, bytes.NewReader(generated.Images[0]), objectKey, "image/jpeg"); err != nil {
+	previewExt, previewMIME := utils.GeneratedImageName(generated.Images[0])
+	objectKey := fmt.Sprintf("trend_previews/%s/%d%s", trend.Slug, time.Now().UnixNano(), previewExt)
+	if _, err := utils.UploadFileToS3(persistCtx, bytes.NewReader(generated.Images[0]), objectKey, previewMIME); err != nil {
 		utils.RespondInternalError(w, r, nil, "s3",
 			"The image generated but couldn't be saved.", err, http.StatusInternalServerError)
 		return
@@ -312,9 +313,10 @@ func decodeSampleImages(ctx context.Context, samples []string) ([]utils.TrendIma
 			continue
 		}
 
-		key := fmt.Sprintf("trend_previews/inputs/%d-%d.jpg", time.Now().UnixNano(), i)
+		ext, mime := utils.GeneratedImageName(data)
+		key := fmt.Sprintf("trend_previews/inputs/%d-%d%s", time.Now().UnixNano(), i, ext)
 		uploadCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		_, err = utils.UploadFileToS3(uploadCtx, bytes.NewReader(data), key, "image/jpeg")
+		_, err = utils.UploadFileToS3(uploadCtx, bytes.NewReader(data), key, mime)
 		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("could not stage sample image %d", i+1)

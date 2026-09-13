@@ -329,7 +329,7 @@ func ReserveGeneration(ctx context.Context, userID, tryOnType, quality, idempote
 	}
 
 	return ReserveGenerationCost(ctx, userID, tryOnType, quality, idempotencyKey,
-		cost, cfg.FreeCovers(tryOnType, quality), isGuest)
+		cost, freeCoverage(cfg, tryOnType, quality, isGuest), isGuest)
 }
 
 // ReserveGenerationCost is ReserveGeneration for a generation whose price is
@@ -424,6 +424,16 @@ func ReserveGenerationCost(ctx context.Context, userID, tryOnType, quality, idem
 // counter resets to 1, otherwise it increments. Doing it here rather than on
 // a nightly job means a dormant user costs nothing and there is no window in
 // which yesterday's count still applies.
+// freeCoverage widens free eligibility for guests only, so that the first-run
+// quality upgrade is still covered by the daily free allowance instead of
+// falling through to the paid path a guest can never satisfy.
+func freeCoverage(cfg *config.StarConfig, tryOnType, quality string, isGuest bool) bool {
+	if isGuest {
+		return cfg.FreeCoversGuest(tryOnType, quality)
+	}
+	return cfg.FreeCovers(tryOnType, quality)
+}
+
 func reserveDailyFree(ctx context.Context, userID string, limit int, h models.StarHold) (bool, error) {
 	today := utcDateString()
 
@@ -487,6 +497,33 @@ func holdDoc(h models.StarHold) bson.M {
 		"id": h.ID, "amount": h.Amount, "source": h.Source, "key": h.Key,
 		"tryon_type": h.TryOnType, "quality": h.Quality, "at": h.At,
 	}
+}
+
+// HasEverGenerated reports whether this account has ever completed a
+// generation.
+//
+// Reads lifetime_generations, which CommitReservation increments and nothing
+// else touches, so it counts successes only: a run that failed or was refunded
+// leaves it alone. An account with no balance document has obviously never
+// generated, and a lookup error is reported as "yes" so that a Mongo blip
+// downgrades a perk rather than handing it out repeatedly.
+func HasEverGenerated(ctx context.Context, userID string) bool {
+	var doc struct {
+		LifetimeGenerations int `bson:"lifetime_generations"`
+	}
+	err := starBalances().FindOne(ctx, bson.M{"_id": userID},
+		options.FindOne().SetProjection(bson.M{"lifetime_generations": 1}),
+	).Decode(&doc)
+
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return false
+	}
+	if err != nil {
+		slog.Warn("could not read lifetime_generations; assuming the account has generated before",
+			"user_id", userID, "error", err.Error())
+		return true
+	}
+	return doc.LifetimeGenerations > 0
 }
 
 // ---------------------------------------------------------------- settling

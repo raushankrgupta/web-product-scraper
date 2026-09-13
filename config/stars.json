@@ -13,8 +13,8 @@
     "    go run ./tools/stars_check",
     "which fails loudly on any tier that is priced below its floor."
   ],
-  "version": 3,
-  "updated_at": "2026-08-31",
+  "version": 4,
+  "updated_at": "2026-09-13",
   "currency": "INR",
   "economics": {
     "_note": [
@@ -173,6 +173,18 @@
     "daily_free_count": 1,
     "guest_daily_free_count": 1,
     "free_quality": "flash",
+    "guest_first_quality": "pro",
+    "_guest_first_quality_note": [
+      "A guest's first-ever generation runs on the Pro model; every later one",
+      "runs on free_quality. Counted in successful generations, so a first",
+      "attempt that failed does not spend the upgrade.",
+      "",
+      "This costs the Pro rate (~$0.134) once per device instead of the",
+      "Standard rate (~$0.039). It buys the one impression that decides",
+      "whether the install survives: the Standard model answers a tightly",
+      "cropped portrait by returning the customer's own photo unchanged.",
+      "Set to \"\" to disable and put every guest run back on free_quality."
+    ],
     "free_types": [
       "individual"
     ],

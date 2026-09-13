@@ -148,13 +148,27 @@ type StarFreeRules struct {
 	WelcomeStars          int `json:"welcome_stars"`
 	ReturningWelcomeStars int `json:"returning_welcome_stars"`
 
-	WelcomeCredits          int      `json:"welcome_credits"`
-	ReturningWelcomeCredits int      `json:"returning_welcome_credits"`
-	DailyFreeCount          int      `json:"daily_free_count"`
-	GuestDailyFreeCount     int      `json:"guest_daily_free_count"`
-	FreeQuality             string   `json:"free_quality"`
-	FreeTypes               []string `json:"free_types"`
-	SuppressWhenAffordable  bool     `json:"suppress_when_affordable"`
+	WelcomeCredits          int    `json:"welcome_credits"`
+	ReturningWelcomeCredits int    `json:"returning_welcome_credits"`
+	DailyFreeCount          int    `json:"daily_free_count"`
+	GuestDailyFreeCount     int    `json:"guest_daily_free_count"`
+	FreeQuality             string `json:"free_quality"`
+
+	// GuestFirstQuality upgrades a guest's first-ever generation to a better
+	// tier. Empty disables the upgrade and every guest generation runs at
+	// FreeQuality.
+	//
+	// It exists because the free tier's model is materially worse at the one
+	// job the guest funnel has to do. gemini-2.5-flash-image answers a
+	// tightly-cropped portrait by returning the photo unchanged, so the first
+	// thing a new user ever saw was their own picture. Paying the Pro rate
+	// once per device is a cheaper acquisition cost than losing the install.
+	//
+	// "First" is counted in successful generations, so a guest whose first
+	// attempt failed still gets the upgrade on their retry.
+	GuestFirstQuality      string   `json:"guest_first_quality"`
+	FreeTypes              []string `json:"free_types"`
+	SuppressWhenAffordable bool     `json:"suppress_when_affordable"`
 }
 
 // StarRewardRules configures the stars a user can earn without paying.
@@ -329,6 +343,11 @@ func (s *StarConfig) validate() error {
 	if _, ok := s.Models[s.Free.FreeQuality]; !ok {
 		return fmt.Errorf("free.free_quality %q is not a defined model", s.Free.FreeQuality)
 	}
+	if s.Free.GuestFirstQuality != "" {
+		if _, ok := s.Models[s.Free.GuestFirstQuality]; !ok {
+			return fmt.Errorf("free.guest_first_quality %q is not a defined model", s.Free.GuestFirstQuality)
+		}
+	}
 	for _, t := range s.Free.FreeTypes {
 		if _, ok := s.Tiers[t]; !ok {
 			return fmt.Errorf("free.free_types references unknown try-on type %q", t)
@@ -481,6 +500,27 @@ func (s *StarConfig) PackByProductID(id string) (StarPack, bool) {
 // combination. couple/group and Pro quality always cost stars.
 func (s *StarConfig) FreeCovers(tryOnType, quality string) bool {
 	if quality != s.Free.FreeQuality {
+		return false
+	}
+	for _, t := range s.Free.FreeTypes {
+		if t == tryOnType {
+			return true
+		}
+	}
+	return false
+}
+
+// FreeCoversGuest is FreeCovers widened by GuestFirstQuality.
+//
+// Deliberately a separate method rather than a widening of FreeCovers: that
+// one governs signed-in users too, and letting it approve the Pro tier for
+// free there would give away the thing the tier is sold for. Only call this
+// on a request already known to be a guest's first generation.
+func (s *StarConfig) FreeCoversGuest(tryOnType, quality string) bool {
+	if s.FreeCovers(tryOnType, quality) {
+		return true
+	}
+	if s.Free.GuestFirstQuality == "" || quality != s.Free.GuestFirstQuality {
 		return false
 	}
 	for _, t := range s.Free.FreeTypes {

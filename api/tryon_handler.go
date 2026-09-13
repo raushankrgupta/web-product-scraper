@@ -456,7 +456,8 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Save Try-On Record
 	// Upload generated image to S3
-	fileName := fmt.Sprintf("generated_tryon_%d.jpg", time.Now().UnixNano())
+	genExt, genMIME := utils.GeneratedImageName(generatedContent)
+	fileName := fmt.Sprintf("generated_tryon_%d%s", time.Now().UnixNano(), genExt)
 	objectKey := fmt.Sprintf("generated_images/%s", fileName)
 
 	// generatedContent is []byte. Stored on persistCtx, not r.Context() — see
@@ -464,7 +465,7 @@ func VirtualTryOnHandler(w http.ResponseWriter, r *http.Request) {
 	uploadCtx, cancelUpload := persistCtx()
 	defer cancelUpload()
 
-	_, err = utils.UploadFileToS3(uploadCtx, bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	_, err = utils.UploadFileToS3(uploadCtx, bytes.NewReader(generatedContent), objectKey, genMIME)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err))
 		alert.Errorf("s3", "generated image upload failed", err)
@@ -794,13 +795,14 @@ func processMultiPersonTryOn(w http.ResponseWriter, r *http.Request, requiredPeo
 		"Try-on generated OK: bytes=%d duration=%s", len(generatedContent), time.Since(genStart).Round(time.Millisecond)))
 
 	// 4. Save Try-On Record
-	fileName := fmt.Sprintf("generated_tryon_%s_%d.jpg", tryOnType, time.Now().UnixNano())
+	genExt, genMIME := utils.GeneratedImageName(generatedContent)
+	fileName := fmt.Sprintf("generated_tryon_%s_%d%s", tryOnType, time.Now().UnixNano(), genExt)
 	objectKey := fmt.Sprintf("generated_images/%s", fileName)
 
 	uploadCtx, cancelUpload := persistCtx()
 	defer cancelUpload()
 
-	_, err = utils.UploadFileToS3(uploadCtx, bytes.NewReader(generatedContent), objectKey, "image/jpeg")
+	_, err = utils.UploadFileToS3(uploadCtx, bytes.NewReader(generatedContent), objectKey, genMIME)
 	if err != nil {
 		utils.AddToLogMessage(&logMessageBuilder, fmt.Sprintf("Failed to upload generated image: %v", err))
 		alert.Errorf("s3", "generated image upload failed", err, "type", tryOnType)
