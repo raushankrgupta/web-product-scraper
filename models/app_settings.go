@@ -37,6 +37,16 @@ type AppUpdateSettings struct {
 	// when Mode is "force".
 	MinSupportedVersion string `bson:"min_supported_version" json:"min_supported_version"`
 
+	// IOSLatestVersion / IOSMinSupportedVersion are the same two levers for
+	// iPhones, set separately on purpose. An iOS release goes live only after
+	// App Review — a day or more after the Android one — so sharing one
+	// version would prompt every iPhone user to install a build the App Store
+	// does not have yet, and in force mode lock them out of the app. Empty
+	// means "never prompt on iOS"; the Android fields are never used as a
+	// fallback.
+	IOSLatestVersion       string `bson:"ios_latest_version,omitempty" json:"ios_latest_version"`
+	IOSMinSupportedVersion string `bson:"ios_min_supported_version,omitempty" json:"ios_min_supported_version"`
+
 	AndroidStoreURL string `bson:"android_store_url,omitempty" json:"android_store_url"`
 	IOSStoreURL     string `bson:"ios_store_url,omitempty" json:"ios_store_url"`
 

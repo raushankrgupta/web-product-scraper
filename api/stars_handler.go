@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/raushankrgupta/web-product-scraper/config"
@@ -74,7 +75,9 @@ func CatalogHandler(w http.ResponseWriter, r *http.Request) {
 				"referee_stars":  cfg.Rewards.Referral.RefereeStars,
 			},
 			"review": map[string]interface{}{
-				"enabled": cfg.Rewards.Review.Enabled,
+				// Never offered on iOS: App Review treats paying for a review
+				// as manipulating ratings (guidelines 5.6.1 / 5.6.3).
+				"enabled": cfg.Rewards.Review.Enabled && requestPlatform(r) != platformIOS,
 				"stars":   cfg.Rewards.Review.Stars,
 			},
 		},
@@ -88,6 +91,12 @@ type PurchaseRequest struct {
 	// a claim, not proof — the server verifies it with Google before any
 	// stars move.
 	PurchaseToken string `json:"purchase_token"`
+
+	// Platform is "ios" for App Store purchases; anything else is Play. On
+	// iOS, PurchaseToken is StoreKit's signed transaction and TransactionID
+	// is the id Apple is asked about.
+	Platform      string `json:"platform"`
+	TransactionID string `json:"transaction_id"`
 }
 
 // PurchaseHandler credits a completed Google Play purchase.
@@ -118,6 +127,14 @@ func PurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		utils.RespondError(w, nil, "Invalid request body", http.StatusBadRequest)
 		return
 	}
+	if req.Platform == "" && requestPlatform(r) == platformIOS {
+		req.Platform = platformIOS
+	}
+	if strings.EqualFold(req.Platform, platformIOS) {
+		submitApplePurchase(w, r, userID, req)
+		return
+	}
+
 	if req.ProductID == "" || req.PurchaseToken == "" {
 		utils.RespondError(w, nil, "product_id and purchase_token are required", http.StatusBadRequest)
 		return

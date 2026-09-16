@@ -38,6 +38,14 @@ type User struct {
 	// permanent Google-login lockout.
 	DeletedEmail string    `bson:"deleted_email,omitempty" json:"-"`
 	DeletedAt    time.Time `bson:"deleted_at,omitempty" json:"-"`
+
+	// AppleSub is the Sign in with Apple subject — the stable id Apple gives
+	// this user for this app. Accounts are matched on it before email, because
+	// the email can be a private relay address or missing altogether.
+	AppleSub string `bson:"apple_sub,omitempty" json:"-"`
+	// AppleRefreshToken exists only so the grant can be revoked when the
+	// account is deleted (Apple TN3194). Never returned to a client.
+	AppleRefreshToken string `bson:"apple_refresh_token,omitempty" json:"-"`
 }
 
 // PlanOrDefault returns the user's plan, falling back to PlanFree for documents

@@ -210,6 +210,10 @@ func registerRoutes(mux *http.ServeMux) {
 	// Static site.
 	mux.Handle("/", http.FileServer(http.Dir("./static")))
 
+	// The link the app shares: sends each visitor to their device's store,
+	// carrying the referral code. See api.GetAppHandler.
+	mux.Handle("/get", guard([]string{http.MethodGet, http.MethodHead}, http.HandlerFunc(api.GetAppHandler)))
+
 	// Health — unauthenticated, cheap, and the thing to point an uptime
 	// monitor at.
 	mux.Handle("/health", guard([]string{http.MethodGet, http.MethodHead}, http.HandlerFunc(api.HealthHandler)))
@@ -219,6 +223,7 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/auth/verify-otp", guard(post, http.HandlerFunc(api.VerifyOTPHandler)))
 	mux.Handle("/auth/login", guard(post, http.HandlerFunc(api.LoginHandler)))
 	mux.Handle("/auth/google", guard(post, http.HandlerFunc(api.GoogleLoginHandler)))
+	mux.Handle("/auth/apple", guard(post, http.HandlerFunc(api.AppleLoginHandler)))
 	mux.Handle("/auth/guest", guard(post, http.HandlerFunc(api.GuestTokenHandler)))
 	mux.Handle("/auth/forgot-password", guard(post, http.HandlerFunc(api.ForgotPasswordHandler)))
 	mux.Handle("/auth/reset-password", guard(post, http.HandlerFunc(api.ResetPasswordHandler)))
@@ -249,6 +254,11 @@ func registerRoutes(mux *http.ServeMux) {
 	// finds the URL forge a refund.
 	mux.Handle("/billing/play-rtdn", guard(post, http.HandlerFunc(api.PlayRTDNHandler)))
 
+	// App Store Server Notifications V2 (refunds, and purchases the app never
+	// submitted). Apple is the caller, so no AuthMiddleware; the body is a JWS
+	// verified against Apple's root certificate, which is the guard.
+	mux.Handle("/billing/apple-notifications", guard(post, http.HandlerFunc(api.AppleNotificationsHandler)))
+
 	// Earned stars. Both rewards are bounded per identity server-side, so
 	// these are ordinary authenticated endpoints — the guard is the unique
 	// index behind them, not the route.
@@ -256,6 +266,10 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/rewards/referral", guard(get, api.AuthMiddleware(http.HandlerFunc(api.ReferralHandler))))
 	mux.Handle("/rewards/referral/redeem", guard(post, api.AuthMiddleware(http.HandlerFunc(api.RedeemReferralHandler))))
 	mux.Handle("/rewards/review", guard(post, api.AuthMiddleware(http.HandlerFunc(api.ReviewRewardHandler))))
+
+	// Consent to third-party AI processing (App Store guideline 5.1.2(i)).
+	// Guests too — they generate try-ons as well.
+	mux.Handle("/consent/ai", guard(post, api.AuthMiddleware(http.HandlerFunc(api.AIConsentHandler))))
 
 	// Remote switchboard for the client (Link Import mode, limits, blocked
 	// hosts). Unauthenticated: nothing secret, and the guest flow reads it

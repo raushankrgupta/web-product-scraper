@@ -89,8 +89,13 @@ func RewardsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cancel()
 
+	review := utils.GetReviewRewardStatus(ctx, id.Email)
+	if requestPlatform(r) == platformIOS {
+		// Never offered on iOS; see ReviewRewardHandler.
+		review.Available = false
+	}
 	payload := map[string]interface{}{
-		"review": utils.GetReviewRewardStatus(ctx, id.Email),
+		"review": review,
 	}
 
 	if config.Stars.Rewards.Referral.Enabled {
@@ -208,7 +213,8 @@ type reviewRewardRequest struct {
 //
 // The grant is for *leaving a review*, never for the score. Google Play's
 // Developer Program Policy forbids incentivising ratings, so there is no
-// rating field to send here and the app copy must not mention one.
+// rating field to send here and the app copy must not mention one. It is
+// Android-only: the App Store does not allow it at all.
 func ReviewRewardHandler(w http.ResponseWriter, r *http.Request) {
 	id, ctx, cancel, ok := rewardCaller(w, r)
 	if !ok {
@@ -223,9 +229,16 @@ func ReviewRewardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	platform := strings.ToLower(strings.TrimSpace(req.Platform))
-	if platform != "ios" {
-		platform = "android"
+	// Refused on iOS, whichever way the client says it is an iPhone. App
+	// Review treats rewarding a review as manipulating ratings (guidelines
+	// 5.6.1 / 5.6.3), and an old or modified build must not be able to claim
+	// it just because the current app hides the card.
+	if platform == platformIOS || requestPlatform(r) == platformIOS {
+		utils.RespondErrorReason(w, nil, "That reward isn't available on iPhone",
+			"review_disabled", http.StatusForbidden)
+		return
 	}
+	platform = platformAndroid
 
 	stars, err := utils.ClaimReviewReward(ctx, id.UserID, id.Email, platform)
 	switch {

@@ -39,6 +39,14 @@ func EnsureIndexes(ctx context.Context, dbName string) {
 			Keys:    bson.D{{Key: "email", Value: 1}},
 			Options: options.Index().SetUnique(true),
 		}},
+		// Sign in with Apple looks accounts up by Apple's subject id. Unique so
+		// one Apple ID can never own two live accounts; partial because most
+		// users have no Apple sign-in at all.
+		{"users", mongo.IndexModel{
+			Keys: bson.D{{Key: "apple_sub", Value: 1}},
+			Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+				bson.M{"apple_sub": bson.M{"$exists": true, "$type": "string"}}),
+		}},
 		// Powers the "which domains can't we scrape" digest.
 		{"products", mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: -1}}}},
 		// The same digest one level down: which *sites* are failing and for

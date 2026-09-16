@@ -139,6 +139,7 @@ type StarLedgerEntry struct {
 	PurchaseToken string `bson:"purchase_token,omitempty" json:"purchase_token,omitempty"`
 	ProductID     string `bson:"product_id,omitempty" json:"product_id,omitempty"`
 	OrderID       string `bson:"order_id,omitempty" json:"order_id,omitempty"`
+	Store         string `bson:"store,omitempty" json:"store,omitempty"`
 
 	// HoldID / IdempotencyKey link a spend to the generation that caused it.
 	HoldID         string `bson:"hold_id,omitempty" json:"hold_id,omitempty"`
@@ -159,6 +160,20 @@ const (
 	PurchaseRefunded  = "refunded"  // voided after crediting
 	PurchaseRejected  = "rejected"  // failed verification
 )
+
+// Stores a purchase can come from. Rows written before iOS existed carry no
+// store field and are Google Play purchases; queries that must skip Apple rows
+// therefore filter on `store != apple`, never `store == google`.
+const (
+	StoreGoogle = "google"
+	StoreApple  = "apple"
+)
+
+// ApplePurchaseKeyPrefix namespaces App Store transactions in the
+// purchase_token column. An Apple transaction id is a short decimal string,
+// so the prefix is what keeps it from ever colliding with a Play token and
+// lets the existing unique indexes and idempotency ring guard both stores.
+const ApplePurchaseKeyPrefix = "apple:"
 
 // StarPurchase records every purchase token we have ever seen, including ones
 // we refused to credit.
@@ -183,6 +198,21 @@ type StarPurchase struct {
 	// a support question can be answered without re-querying Play.
 	GooglePurchaseState int `bson:"google_purchase_state" json:"google_purchase_state"`
 	GoogleAckState      int `bson:"google_ack_state" json:"google_ack_state"`
+
+	// Store is "google" or "apple"; empty on rows that predate iOS (Google).
+	Store string `bson:"store,omitempty" json:"store,omitempty"`
+
+	// App Store fields. TransactionID is the raw id; PurchaseToken holds it
+	// with ApplePurchaseKeyPrefix. Environment is "Production" or "Sandbox".
+	TransactionID         string `bson:"transaction_id,omitempty" json:"transaction_id,omitempty"`
+	OriginalTransactionID string `bson:"original_transaction_id,omitempty" json:"original_transaction_id,omitempty"`
+	Environment           string `bson:"environment,omitempty" json:"environment,omitempty"`
+	AppAccountToken       string `bson:"app_account_token,omitempty" json:"app_account_token,omitempty"`
+	Storefront            string `bson:"storefront,omitempty" json:"storefront,omitempty"`
+
+	// RevokedCredit is set when a refund took back stars that had actually
+	// been credited, so a reversed refund knows there is something to restore.
+	RevokedCredit bool `bson:"revoked_credit,omitempty" json:"revoked_credit,omitempty"`
 
 	Consumed    bool      `bson:"consumed" json:"consumed"`
 	PurchasedAt time.Time `bson:"purchased_at,omitempty" json:"purchased_at,omitempty"`

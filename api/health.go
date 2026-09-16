@@ -194,10 +194,15 @@ func HealthHandler(w http.ResponseWriter, r *http.Request) {
 		// pay in the store. Surfacing it here is what makes that visible
 		// before someone pays and gets nothing.
 		"billing": map[string]interface{}{
-			"play_configured":  utils.PlayBillingConfigured(),
-			"rtdn_configured":  config.PlayRTDNToken != "",
-			"star_config_ver":  config.Stars.Version,
-			"star_config_date": config.Stars.UpdatedAt,
+			"play_configured": utils.PlayBillingConfigured(),
+			"rtdn_configured": config.PlayRTDNToken != "",
+			// Same reasoning for iPhones: without the In-App Purchase key an
+			// App Store purchase cannot be verified.
+			"appstore_configured":       utils.AppStoreConfigured(),
+			"appstore_sandbox_allowed":  config.AppStoreAllowSandbox,
+			"apple_signin_revoke_ready": utils.AppleSignInRevokeConfigured(),
+			"star_config_ver":           config.Stars.Version,
+			"star_config_date":          config.Stars.UpdatedAt,
 		},
 		"alerts": map[string]interface{}{
 			"enabled": alert.Enabled(),

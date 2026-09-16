@@ -740,6 +740,9 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 			"email":         utils.TombstoneEmail(existing.Email, userID),
 			"deleted_email": existing.Email,
 		},
+		// The Apple link goes too, so the same Apple ID can sign up afresh
+		// rather than finding this tombstone.
+		"$unset": bson.M{"apple_sub": "", "apple_refresh_token": ""},
 	}
 
 	result, err := collection.UpdateOne(ctx, bson.M{"_id": userID}, update)
@@ -761,6 +764,10 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	// A failure must not fail the deletion — the account is already
 	// tombstoned and the user is entitled to that regardless. PurgeUserData
 	// is idempotent, so the alert is a prompt to re-run it, not a dead end.
+	// Sign in with Apple users: revoke the grant, as Apple requires when an
+	// account is deleted. Best-effort, like the purge below.
+	revokeAppleSignIn(existing, &logMessageBuilder)
+
 	purgeCtx, purgeCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer purgeCancel()
 	if err := utils.PurgeUserData(purgeCtx, userIdStr); err != nil {

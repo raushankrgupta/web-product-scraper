@@ -42,6 +42,12 @@ type PurchaseResult struct {
 	Credited  bool   `json:"credited"`  // whether the balance moved on this call
 	Duplicate bool   `json:"duplicate"` // token had already been credited
 	Message   string `json:"message"`
+
+	// OtherAccount is set when the purchase was credited to a different
+	// account than the caller's — the account that actually paid. The app
+	// still closes the transaction, but must not tell this user the stars
+	// are theirs.
+	OtherAccount bool `json:"other_account,omitempty"`
 }
 
 // SubmitPurchase verifies a Play purchase token with Google and, if it is a
@@ -118,7 +124,7 @@ func SubmitPurchase(ctx context.Context, userID, productID, token string) (Purch
 		appendLedger(ctx, models.StarLedgerEntry{
 			UserID: userID, Delta: pack.Stars, Reason: models.ReasonPurchase,
 			Source: models.FundStars, PurchaseToken: token, ProductID: productID,
-			OrderID: purchase.OrderId,
+			OrderID: purchase.OrderId, Store: models.StoreGoogle,
 		})
 		slog.Info("stars credited", "user_id", userID, "product", productID, "stars", pack.Stars)
 	}
@@ -184,6 +190,7 @@ func recordPurchase(ctx context.Context, userID, productID, token string, stars 
 	set := bson.M{
 		"user_id": userID, "product_id": productID, "stars": stars,
 		"state": state, "reason": reason, "updated_at": now,
+		"store": models.StoreGoogle,
 	}
 	if p != nil {
 		set["order_id"] = p.OrderId
@@ -196,7 +203,12 @@ func recordPurchase(ctx context.Context, userID, productID, token string, stars 
 	if state == models.PurchaseCredited {
 		set["credited_at"] = now
 	}
+	upsertPurchaseRecord(userID, productID, token, state, set)
+}
 
+// upsertPurchaseRecord writes the audit row for a token, store-agnostic.
+func upsertPurchaseRecord(userID, productID, token, state string, set bson.M) {
+	now := time.Now()
 	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -269,16 +281,74 @@ func RevokePurchase(ctx context.Context, token, reason string) error {
 	}
 
 	if res.ModifiedCount > 0 {
+		// Remembered so a reversed refund (Apple's REFUND_REVERSED) knows
+		// there are stars to give back, rather than crediting a purchase that
+		// was refunded before it was ever credited.
+		_, _ = starPurchases().UpdateOne(ctx, bson.M{"purchase_token": token},
+			bson.M{"$set": bson.M{"revoked_credit": true}})
+
+		// The ledger's purchase_token index is unique, and the purchase row
+		// already holds this token — a chargeback row carrying the bare token
+		// was rejected as a duplicate and silently never written. The suffix
+		// keeps the audit row while leaving the token searchable.
 		appendLedger(ctx, models.StarLedgerEntry{
 			UserID: p.UserID, Delta: -p.Stars, Reason: models.ReasonChargeback,
-			Source: models.FundStars, PurchaseToken: token, ProductID: p.ProductID,
-			Note: reason,
+			Source: models.FundStars, PurchaseToken: ledgerEventToken(token, "revoked"),
+			ProductID: p.ProductID, Store: p.Store, Note: reason,
 		})
 		alert.Warnf("billing", "purchase revoked", nil,
 			"user_id", p.UserID, "product", p.ProductID,
 			"stars", fmt.Sprint(p.Stars), "reason", reason)
 	}
 	return nil
+}
+
+// RestoreRevokedPurchase gives back stars taken by RevokePurchase when the
+// store reverses the refund (Apple's REFUND_REVERSED). It only acts on a
+// purchase whose refund actually debited a credit, and exactly once.
+func RestoreRevokedPurchase(ctx context.Context, token, reason string) error {
+	var p models.StarPurchase
+	err := starPurchases().FindOneAndUpdate(ctx,
+		bson.M{
+			"purchase_token": token,
+			"state":          models.PurchaseRefunded,
+			"revoked_credit": true,
+		},
+		bson.M{"$set": bson.M{
+			"state":          models.PurchaseCredited,
+			"revoked_credit": false,
+			"reason":         reason,
+			"updated_at":     time.Now(),
+		}},
+	).Decode(&p)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil
+		}
+		return fmt.Errorf("look up purchase for restore: %w", err)
+	}
+
+	if _, err := starBalances().UpdateOne(ctx,
+		bson.M{"_id": p.UserID},
+		bson.M{"$inc": bson.M{"stars": p.Stars}, "$set": bson.M{"updated_at": time.Now()}},
+	); err != nil {
+		return fmt.Errorf("restore stars: %w", err)
+	}
+
+	appendLedger(ctx, models.StarLedgerEntry{
+		UserID: p.UserID, Delta: p.Stars, Reason: models.ReasonAdjustment,
+		Source: models.FundStars, PurchaseToken: ledgerEventToken(token, "restored"),
+		ProductID: p.ProductID, Store: p.Store, Note: reason,
+	})
+	slog.Info("refunded purchase restored", "user_id", p.UserID, "product", p.ProductID, "stars", p.Stars)
+	return nil
+}
+
+// ledgerEventToken makes a unique ledger key for a follow-up event on a
+// purchase. The timestamp allows the same event twice (refunded, reversed,
+// refunded again) without colliding on the unique index.
+func ledgerEventToken(token, event string) string {
+	return fmt.Sprintf("%s#%s:%d", token, event, time.Now().UnixNano())
 }
 
 // ------------------------------------------------------------- reconciliation
@@ -301,9 +371,12 @@ func ReconcilePurchases(ctx context.Context, voidedSince time.Time) error {
 
 	// 1. Pending purchases.
 	cutoff := time.Now().Add(-72 * time.Hour)
+	// Every query here talks to Google, so App Store rows are excluded. Rows
+	// from before iOS have no store field, which `$ne` still matches.
 	cur, err := starPurchases().Find(ctx, bson.M{
 		"state":      models.PurchasePending,
 		"created_at": bson.M{"$gt": cutoff},
+		"store":      bson.M{"$ne": models.StoreApple},
 	})
 	if err != nil {
 		return fmt.Errorf("find pending purchases: %w", err)
@@ -322,6 +395,7 @@ func ReconcilePurchases(ctx context.Context, voidedSince time.Time) error {
 	// 2. Credited but unconsumed — Play auto-refunds these after three days.
 	cur, err = starPurchases().Find(ctx, bson.M{
 		"state": models.PurchaseCredited, "consumed": false,
+		"store": bson.M{"$ne": models.StoreApple},
 	})
 	if err == nil {
 		var stale []models.StarPurchase

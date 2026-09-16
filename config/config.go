@@ -125,6 +125,45 @@ var (
 	// it anyone who finds the endpoint can forge a refund notification.
 	PlayRTDNToken string
 
+	// --- Apple App Store (star purchases on iOS) ---
+	//
+	// The In-App Purchase key from App Store Connect → Users and Access →
+	// Integrations → In-App Purchase. It signs the JWT that authenticates
+	// calls to the App Store Server API, which is the only thing trusted to
+	// say whether an iOS purchase happened. Unset means iOS purchases are
+	// refused, for the same reason Play purchases are refused without a
+	// service account.
+	AppStoreIssuerID   string
+	AppStoreKeyID      string
+	AppStorePrivateKey string // PEM (.p8 contents); "\n" escapes are accepted
+
+	// AppleBundleID is the iOS bundle identifier. Every signed transaction,
+	// notification and Sign in with Apple token is checked against it.
+	AppleBundleID string
+	// AppleAppID is the numeric App Store id ("Apple ID" in App Store
+	// Connect). Used for the App Store link; empty until the app record exists.
+	AppleAppID string
+
+	// AppStoreAllowSandbox accepts sandbox transactions on this server.
+	// App Review buys with sandbox accounts against the production build, so
+	// switching this off gets the app rejected. The cost is that TestFlight
+	// testers' free sandbox purchases credit real stars — every sandbox credit
+	// is logged and marked in the purchase record.
+	AppStoreAllowSandbox bool
+
+	// Sign in with Apple. The key (Certificates, IDs & Profiles → Keys, with
+	// "Sign in with Apple" ticked) signs the client secret used to exchange
+	// an authorization code for a refresh token and to revoke it when the
+	// account is deleted. Without it Apple sign-in still works — the identity
+	// token is verified against Apple's public keys — but token revocation on
+	// deletion, which App Review expects, cannot happen.
+	AppleTeamID        string
+	AppleSignInKeyID   string
+	AppleSignInPrivKey string // PEM (.p8 contents); "\n" escapes are accepted
+
+	// PublicSiteURL is the canonical website, used to build share links.
+	PublicSiteURL string
+
 	// StarsIdentityPepper salts the SHA-256 of an email address before it is
 	// stored for returning-user detection. Without a pepper the hashes are a
 	// plain dictionary of every address that ever signed up; with one, the
@@ -214,6 +253,17 @@ func envInt(key string, def int) int {
 }
 
 // envBool reads a boolean env var, falling back to def when unset or invalid.
+// pemFromEnv reads a PEM key from the environment. A .p8 is multi-line, and
+// most secret stores and .env files carry it on one line with literal "\n"
+// escapes; both forms are accepted.
+func pemFromEnv(key string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if strings.Contains(v, `\n`) {
+		v = strings.ReplaceAll(v, `\n`, "\n")
+	}
+	return v
+}
+
 func envBool(key string, def bool) bool {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
@@ -350,6 +400,23 @@ func LoadConfig() {
 	PlayServiceAccountJSON = strings.TrimSpace(os.Getenv("PLAY_SERVICE_ACCOUNT_JSON"))
 	PlayServiceAccountFile = strings.TrimSpace(os.Getenv("PLAY_SERVICE_ACCOUNT_FILE"))
 	PlayRTDNToken = strings.TrimSpace(os.Getenv("PLAY_RTDN_TOKEN"))
+
+	AppStoreIssuerID = strings.TrimSpace(os.Getenv("APPSTORE_ISSUER_ID"))
+	AppStoreKeyID = strings.TrimSpace(os.Getenv("APPSTORE_KEY_ID"))
+	AppStorePrivateKey = pemFromEnv("APPSTORE_PRIVATE_KEY")
+	AppleBundleID = strings.TrimSpace(os.Getenv("APPLE_BUNDLE_ID"))
+	if AppleBundleID == "" {
+		AppleBundleID = "com.raushan26.tryonfusion"
+	}
+	AppleAppID = strings.TrimSpace(os.Getenv("APPLE_APP_ID"))
+	AppStoreAllowSandbox = envBool("APPSTORE_ALLOW_SANDBOX", true)
+	AppleTeamID = strings.TrimSpace(os.Getenv("APPLE_TEAM_ID"))
+	AppleSignInKeyID = strings.TrimSpace(os.Getenv("APPLE_SIGNIN_KEY_ID"))
+	AppleSignInPrivKey = pemFromEnv("APPLE_SIGNIN_PRIVATE_KEY")
+	PublicSiteURL = strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_SITE_URL")), "/")
+	if PublicSiteURL == "" {
+		PublicSiteURL = "https://www.tryonfusion.com"
+	}
 
 	StarsIdentityPepper = strings.TrimSpace(os.Getenv("STARS_IDENTITY_PEPPER"))
 	if StarsIdentityPepper == "" {

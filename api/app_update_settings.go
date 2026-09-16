@@ -93,6 +93,8 @@ func sanitizeAppUpdate(in models.AppUpdateSettings) models.AppUpdateSettings {
 
 	out.LatestVersion = trimTo(in.LatestVersion, 20)
 	out.MinSupportedVersion = trimTo(in.MinSupportedVersion, 20)
+	out.IOSLatestVersion = trimTo(in.IOSLatestVersion, 20)
+	out.IOSMinSupportedVersion = trimTo(in.IOSMinSupportedVersion, 20)
 
 	// A prompt with nowhere to send the user is worse than no prompt, so an
 	// unset store URL falls back to the canonical listing rather than
@@ -133,6 +135,15 @@ func sanitizeAppUpdate(in models.AppUpdateSettings) models.AppUpdateSettings {
 	if out.Mode == models.UpdateModeForce && out.LatestVersion != "" &&
 		utils.CompareVersions(out.MinSupportedVersion, out.LatestVersion) > 0 {
 		out.MinSupportedVersion = out.LatestVersion
+	}
+	if out.Mode == models.UpdateModeForce && out.IOSLatestVersion != "" &&
+		utils.CompareVersions(out.IOSMinSupportedVersion, out.IOSLatestVersion) > 0 {
+		out.IOSMinSupportedVersion = out.IOSLatestVersion
+	}
+	// An iOS floor with no iOS ceiling has nothing to be checked against, and
+	// a floor alone could only ever lock people out.
+	if out.IOSLatestVersion == "" {
+		out.IOSMinSupportedVersion = ""
 	}
 
 	return out
