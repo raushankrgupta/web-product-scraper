@@ -406,7 +406,14 @@ func LoadConfig() {
 	AppStorePrivateKey = pemFromEnv("APPSTORE_PRIVATE_KEY")
 	AppleBundleID = strings.TrimSpace(os.Getenv("APPLE_BUNDLE_ID"))
 	if AppleBundleID == "" {
-		AppleBundleID = "com.raushan26.tryonfusion"
+		// The iOS bundle identifier — NOT the Android package name. The two
+		// differ for this app (Android ships as com.raushan26.tryonfusion),
+		// and this value is only ever compared against Apple's own copy of a
+		// transaction, notification or Sign in with Apple token. Defaulting it
+		// to the Android id silently rejected every one of those: purchases
+		// came back "wrong bundle id", settlement notifications were ignored,
+		// and the App Store Server API refused the signed JWT.
+		AppleBundleID = "com.try-on-ai.tryonfusion"
 	}
 	AppleAppID = strings.TrimSpace(os.Getenv("APPLE_APP_ID"))
 	AppStoreAllowSandbox = envBool("APPSTORE_ALLOW_SANDBOX", true)
